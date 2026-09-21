@@ -1,0 +1,27 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Runtime
+*.log
+*.pid
+logs/
+
+# Database / backups
+*.dump
+*.sql.gz
+*.backup
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

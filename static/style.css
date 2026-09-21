@@ -1,0 +1,95 @@
+:root{
+  --bg:#f4f6f2; --card:#ffffff; --ink:#1d2a1f; --muted:#5f6d61; --line:#dfe5dc;
+  --brand:#2e6b3a; --brand-2:#e7f0e5; --accent:#c98a1b;
+  --good:#1f7a3d; --good-bg:#d9f0de; --warn:#8a5a00; --warn-bg:#fdf0c8;
+  --bad:#a4262c; --bad-bg:#fbdcdc; --avg-bg:#e6eef8; --avg-ink:#1f3d66;
+  --shadow:0 1px 2px rgba(0,0,0,.05),0 4px 14px rgba(0,0,0,.04);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#111612; --card:#1a211b; --ink:#e4ebe3; --muted:#9aa89b; --line:#2c362d;
+    --brand:#6dbb7c; --brand-2:#223326; --accent:#e0a843;
+    --good:#8fe0a3; --good-bg:#1d3a25; --warn:#f2cf7a; --warn-bg:#3a3018;
+    --bad:#ff9a9f; --bad-bg:#431f22; --avg-bg:#1d2a3b; --avg-ink:#b7cdf0;
+    --shadow:none;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Segoe UI","Noto Sans Sinhala","Noto Sans Tamil",sans-serif}
+header.top{background:var(--brand);color:#fff;padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+@media (prefers-color-scheme:dark){header.top{background:#1f3a25}}
+header.top h1{font-size:17px;margin:0;font-weight:650;flex:1;min-width:160px}
+header.top small{display:block;font-weight:400;opacity:.8;font-size:12px}
+header.top a,header.top button{color:#fff}
+.wrap{max-width:1100px;margin:0 auto;padding:16px}
+.narrow{max-width:560px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:var(--shadow);margin-bottom:14px}
+.card h2{font-size:15px;margin:0 0 10px}
+label{display:block;font-size:13px;color:var(--muted);margin:8px 0 4px}
+input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font:inherit}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--brand);outline-offset:0}
+button,.btn{appearance:none;border:1px solid var(--brand);background:var(--brand);color:#fff;border-radius:8px;padding:10px 14px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:6px;justify-content:center}
+@media (prefers-color-scheme:dark){button,.btn{color:#0d130e}}
+button.ghost,.btn.ghost{background:transparent;color:var(--brand)}
+header.top button.ghost{border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px}
+button:disabled{opacity:.5;cursor:default}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+.row>*{flex:1;min-width:120px}
+.muted{color:var(--muted)}
+.hidden{display:none!important}
+.msg{padding:10px 12px;border-radius:8px;margin:8px 0;font-size:14px}
+.msg.ok{background:var(--good-bg);color:var(--good)}
+.msg.err{background:var(--bad-bg);color:var(--bad)}
+.msg.info{background:var(--warn-bg);color:var(--warn)}
+.lang{display:flex;gap:4px}
+.lang button{padding:4px 8px;font-size:12px;background:transparent;border-color:rgba(255,255,255,.5)}
+.lang button.on{background:#fff;color:var(--brand)}
+
+/* session cards */
+.sessions{display:grid;gap:12px}
+.sess{border:1px solid var(--line);border-radius:12px;padding:14px;background:var(--card)}
+.sess .head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.sess .head b{font-size:16px}
+.pill{font-size:12px;padding:3px 9px;border-radius:99px;font-weight:600;white-space:nowrap}
+.pill.done{background:var(--good-bg);color:var(--good)}
+.pill.todo{background:var(--warn-bg);color:var(--warn)}
+.pill.queued{background:var(--avg-bg);color:var(--avg-ink)}
+.big{font-size:28px;font-weight:700;letter-spacing:-.5px}
+.toggle{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:8px}
+.toggle button{flex:1;border:0;border-radius:0;background:transparent;color:var(--muted);padding:7px;font-weight:500}
+.toggle button.on{background:var(--brand-2);color:var(--brand);font-weight:650}
+.calc{font-size:13px;color:var(--muted);margin-top:4px}
+
+/* dashboard */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.kpi .l{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.kpi .v{font-size:26px;font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums}
+.kpi .s{font-size:12px;color:var(--muted)}
+.tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table.ls{border-collapse:separate;border-spacing:0;width:100%;min-width:620px;font-variant-numeric:tabular-nums}
+table.ls th,table.ls td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:center;white-space:nowrap}
+table.ls th{font-size:12px;color:var(--muted);font-weight:600;background:var(--card);position:sticky;top:0}
+table.ls th.grp{border-bottom:2px solid var(--brand);color:var(--brand)}
+table.ls td:first-child,table.ls th:first-child{text-align:left;position:sticky;left:0;background:var(--card);z-index:1}
+table.ls td.v{font-weight:600}
+td.good{background:var(--good-bg);color:var(--good)}
+td.warn{background:var(--warn-bg);color:var(--warn)}
+td.bad{background:var(--bad-bg);color:var(--bad)}
+td.nil{color:var(--muted);font-weight:400!important}
+tr.avg td{background:var(--avg-bg)!important;color:var(--avg-ink);font-weight:700}
+tr.avg.company td{border-top:2px solid var(--avg-ink)}
+.bar{height:8px;background:var(--line);border-radius:4px;min-width:90px;position:relative}
+.bar i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--brand)}
+.bar b{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--accent)}
+.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:8px}
+.legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px;background:var(--c)}
+.missing{font-size:12px;color:var(--bad)}
+.subcount{font-size:12px;color:var(--muted);font-weight:400}
+svg.trend{width:100%;height:220px;display:block}
+svg.trend text{fill:var(--muted);font-size:11px}
+.dateNav{display:flex;gap:6px;align-items:end;flex-wrap:wrap}
+.dateNav input{width:auto}
+@media (max-width:600px){.wrap{padding:12px}.kpi .v{font-size:22px}}
+table.ls.hist{min-width:0}table.ls.hist th,table.ls.hist td{padding:6px 5px;font-size:13px}

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Leaf Standard</title>
+<link rel="stylesheet" href="static/style.css">
+<style>body{background:transparent}.wrap{padding:0;max-width:none}.card{margin:0}</style>
+</head>
+<body>
+<div class="wrap"><div class="card">
+  <div class="dateNav" style="margin-bottom:10px">
+    <h2 style="flex:1;margin:0;min-width:180px">Leaf Standard — all estates</h2>
+    <button class="ghost" id="prev">◀</button>
+    <input type="date" id="day">
+    <button class="ghost" id="next">▶</button>
+  </div>
+  <div id="miss"></div>
+  <div id="tbl"><p class="muted">Loading…</p></div>
+</div></div>
+<script src="static/common.js"></script>
+<script>
+/* Embedded in the Fertilizer app CEO dashboard:
+   <iframe src=".../field-diary/leaf-standard/embed?key=EMBED_KEY&date=YYYY-MM-DD">  (or use static/widget.js) */
+const $ = id => document.getElementById(id);
+const p = new URLSearchParams(location.search);
+const key = encodeURIComponent(p.get('key') || '');
+let today;
+async function load() {
+  try {
+    const d = await LS.api(`summary?date=${$('day').value}&key=${key}`);
+    $('miss').innerHTML = d.status.estates_missing.length ? `<div class="msg err">No entry: ${d.status.estates_missing.map(LS.esc).join(', ')}</div>` : '';
+    LS.renderTable($('tbl'), d, { compact: p.get('compact') === '1' });
+  } catch (e) { $('tbl').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`; }
+  const h = document.documentElement.scrollHeight;
+  parent.postMessage({ type: 'leaf-standard-height', height: h }, '*');
+}
+(async () => {
+  today = (await LS.api('config')).today;
+  $('day').value = p.get('date') || today; $('day').max = today;
+  $('day').onchange = load;
+  $('prev').onclick = () => { $('day').value = LS.addDays($('day').value, -1); load(); };
+  $('next').onclick = () => { if ($('day').value < today) { $('day').value = LS.addDays($('day').value, 1); load(); } };
+  window.addEventListener('message', ev => { if (ev.data?.type === 'leaf-standard-date') { $('day').value = ev.data.date; load(); } });
+  load(); setInterval(load, 120000);
+})();
+</script>
+</body>
+</html>

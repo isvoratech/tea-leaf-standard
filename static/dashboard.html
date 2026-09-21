@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#2e6b3a">
+<title>Leaf Standard · CEO Dashboard</title>
+<link rel="stylesheet" href="static/style.css">
+<style id="ls-hide-target-entries">#tbl thead tr:first-child th:nth-child(4),#tbl thead tr:first-child th:nth-child(5),#tbl tbody td:has(.bar),#tbl tbody td.subcount{display:none!important}</style>
+</head>
+<body>
+<header class="top">
+  <h1>Leaf Standard — All Estates<small id="who">CEO dashboard</small></h1>
+  <a id="lnkEntry" class="btn ghost hidden" href="./" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Entry</a>
+  <a id="lnkAdmin" class="btn ghost hidden" href="admin" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Users</a>
+  <button id="btnOut" class="ghost">Logout</button>
+</header>
+
+<main class="wrap">
+  <section id="loginCard" class="card hidden" style="max-width:420px;margin:30px auto">
+    <h2>CEO / Admin login</h2>
+    <form id="loginForm">
+      <label>Username</label><input id="u" autocomplete="username" autocapitalize="none" required>
+      <label>Password</label><input id="p" type="password" autocomplete="current-password" required>
+      <div id="loginMsg"></div>
+      <button style="width:100%;margin-top:12px">Login</button>
+    </form>
+  </section>
+
+  <section id="dash" class="hidden">
+    <div class="card">
+      <div class="dateNav">
+        <div><label>View</label>
+          <div class="toggle" style="margin:0"><button type="button" id="mDay" class="on">Day</button><button type="button" id="mPer">Period</button></div>
+        </div>
+        <div id="dayBox" class="dateNav">
+          <button class="ghost" id="prev" title="Previous day">◀</button>
+          <div><label>Date</label><input type="date" id="day"></div>
+          <button class="ghost" id="next" title="Next day">▶</button>
+          <button class="ghost" id="tdy">Today</button>
+        </div>
+        <div id="perBox" class="dateNav hidden">
+          <div><label>From</label><input type="date" id="from"></div>
+          <div><label>To</label><input type="date" id="to"></div>
+          <button class="ghost" data-p="7">7 days</button>
+          <button class="ghost" data-p="mtd">This month</button>
+          <button class="ghost" data-p="q">Quarter</button>
+        </div>
+        <div style="flex:1"></div>
+        <button id="xls">⬇ Excel</button>
+      </div>
+    </div>
+
+    <div class="kpis" id="kpis"></div>
+    <div id="alert"></div>
+
+    <div class="card">
+      <h2 id="tblTitle">Leaf Standard</h2>
+      <div id="tbl"><p class="muted">Loading…</p></div>
+    </div>
+
+    <div class="card">
+      <h2>Trend — last 14 days</h2>
+      <div id="trend"></div>
+    </div>
+    <p class="muted" style="font-size:12px">Auto-refreshes every 2 minutes · <span id="stamp"></span></p>
+  </section>
+</main>
+
+<script src="static/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let cfg, mode = 'day', timer;
+
+async function boot() {
+  $('btnOut').onclick = LS.logout;
+  cfg = await LS.api('config');
+  if (!LS.store.get('token')) return showLogin();
+  try {
+    const me = await LS.api('me');
+    if (!['ceo', 'admin'].includes(me.role)) { location.href = './'; return; }
+    start(me);
+  } catch (e) { showLogin(); }
+}
+
+function showLogin() { $('loginCard').classList.remove('hidden'); $('btnOut').classList.add('hidden'); }
+
+$('loginForm').onsubmit = async ev => {
+  ev.preventDefault();
+  try {
+    const r = await LS.api('login', { method: 'POST', body: JSON.stringify({ username: $('u').value, password: $('p').value }), noRedirect: true });
+    LS.store.set('token', r.token); LS.store.set('user', JSON.stringify(r.user));
+    if (!['ceo', 'admin'].includes(r.user.role)) { location.href = './'; return; }
+    $('loginCard').classList.add('hidden'); $('btnOut').classList.remove('hidden'); start(r.user);
+  } catch (e) { $('loginMsg').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`; }
+};
+
+function start(me) {
+  $('who').textContent = `${me.full_name || me.username} · ${me.role.toUpperCase()}`;
+  if (me.role === 'admin') { $('lnkEntry').classList.remove('hidden'); $('lnkAdmin').classList.remove('hidden'); }
+  $('dash').classList.remove('hidden');
+  const params = new URLSearchParams(location.search);
+  $('day').value = params.get('date') || cfg.today; $('day').max = cfg.today;
+  $('from').value = params.get('from') || cfg.today.slice(0, 8) + '01';
+  $('to').value = params.get('to') || cfg.today;
+  if (params.get('from')) setMode('per');
+  $('prev').onclick = () => { $('day').value = LS.addDays($('day').value, -1); refresh(); };
+  $('next').onclick = () => { if ($('day').value < cfg.today) { $('day').value = LS.addDays($('day').value, 1); refresh(); } };
+  $('tdy').onclick = () => { $('day').value = cfg.today; refresh(); };
+  $('day').onchange = $('from').onchange = $('to').onchange = refresh;
+  $('mDay').onclick = () => setMode('day'); $('mPer').onclick = () => setMode('per');
+  document.querySelectorAll('[data-p]').forEach(b => b.onclick = () => {
+    const t = cfg.today, p = b.dataset.p;
+    $('to').value = t;
+    if (p === '7') $('from').value = LS.addDays(t, -6);
+    if (p === 'mtd') $('from').value = t.slice(0, 8) + '01';
+    if (p === 'q') { const m = +t.slice(5, 7), qm = String(m - ((m - 1) % 3)).padStart(2, '0'); $('from').value = `${t.slice(0, 4)}-${qm}-01`; }
+    refresh();
+  });
+  $('xls').onclick = download;
+  refresh();
+  loadTrend();
+  timer = setInterval(() => { refresh(); loadTrend(); }, 120000);
+}
+
+function setMode(m) {
+  mode = m;
+  $('mDay').classList.toggle('on', m === 'day'); $('mPer').classList.toggle('on', m === 'per');
+  $('dayBox').classList.toggle('hidden', m !== 'day'); $('perBox').classList.toggle('hidden', m === 'day');
+  refresh();
+}
+
+function query() { return mode === 'day' ? `date=${$('day').value}` : `from=${$('from').value}&to=${$('to').value}`; }
+
+async function refresh() {
+  if (!cfg) return;
+  history.replaceState(null, '', '?' + query());
+  try {
+    const d = await LS.api('summary?' + query());
+    const find = k => d.rows.find(r => r.key === k);
+    const all = find('ALL'), hg = find('HG'), lg = find('LG');
+    const tile = (l, v, s, band) => `<div class="kpi"><div class="l">${l}</div><div class="v" style="color:var(--${band === 'nil' ? 'muted' : band})">${LS.pct(v)}</div><div class="s">${s}</div></div>`;
+    const st = d.status;
+    $('kpis').innerHTML =
+      tile('Company avg', all.day_avg, `M ${LS.pct(all.morning)} · N ${LS.pct(all.noon)} · E ${LS.pct(all.evening)}`, LS.band(all.day_avg, d.target, d.warn)) +
+      tile('High Grown', hg.day_avg, '12 estates', LS.band(hg.day_avg, d.target, d.warn)) +
+      tile('Low Grown', lg.day_avg, '4 estates', LS.band(lg.day_avg, d.target, d.warn)) +
+      `<div class="kpi"><div class="l">Entries received</div><div class="v">${st.submitted}<span class="subcount"> / ${st.expected}</span></div><div class="s">${st.estates_complete}/${st.estates_total} estates complete</div></div>`;
+    $('alert').innerHTML = st.estates_missing.length ? `<div class="msg err">No entry yet: ${st.estates_missing.map(LS.esc).join(', ')}</div>` : '';
+    $('tblTitle').textContent = d.days === 1 ? `Leaf Standard — ${LS.nice(d.from)}` : `Leaf Standard — ${LS.nice(d.from)} to ${LS.nice(d.to)} (${d.days} days, averages)`;
+    LS.renderTable($('tbl'), d);
+    $('stamp').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    if (e.status === 401) { clearInterval(timer); $('dash').classList.add('hidden'); showLogin(); }
+    else $('tbl').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`;
+  }
+}
+
+async function loadTrend() {
+  try { LS.renderTrend($('trend'), await LS.api('trend?days=14'), cfg.target); } catch (e) {}
+}
+
+async function download() {
+  const res = await LS.api('export.xlsx?' + query());
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (res.headers.get('content-disposition') || '').match(/filename="(.+)"/)?.[1] || 'Leaf_Standard.xlsx';
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+boot();
+</script>
+</body>
+</html>

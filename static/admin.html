@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Leaf Standard · Users</title>
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<header class="top">
+  <h1>Leaf Standard — Users<small>Admin</small></h1>
+  <a class="btn ghost" href="./" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Entry</a>
+  <a class="btn ghost" href="dashboard" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Dashboard</a>
+  <button id="btnOut" class="ghost">Logout</button>
+</header>
+<main class="wrap">
+  <div id="gate"></div>
+  <section id="body" class="hidden">
+    <div class="card">
+      <h2 id="fTitle">Add user</h2>
+      <form id="f">
+        <input type="hidden" id="uid">
+        <div class="row">
+          <div><label>Username</label><input id="un" required autocapitalize="none"></div>
+          <div><label>Full name</label><input id="fn"></div>
+          <div><label>Role</label><select id="rl"><option value="estate">Estate</option><option value="ceo">CEO</option><option value="admin">Admin</option></select></div>
+          <div id="esBox"><label>Estate</label><select id="es"></select></div>
+          <div><label>Password <span class="muted" id="pwHint"></span></label><input id="pw" type="password" autocomplete="new-password"></div>
+          <div style="flex:0 0 auto"><label>Active</label><input id="ac" type="checkbox" checked style="width:auto;height:38px"></div>
+        </div>
+        <div id="fm"></div>
+        <div class="row" style="margin-top:10px"><button style="flex:0 0 auto">Save</button><button type="button" class="ghost" id="clr" style="flex:0 0 auto">Clear</button></div>
+      </form>
+    </div>
+    <div class="card"><h2>Users</h2><div class="tablewrap"><table class="ls" id="tb"></table></div></div>
+  </section>
+</main>
+<script src="static/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let estates = [], users = [];
+$('btnOut').onclick = LS.logout;
+$('rl').onchange = () => $('esBox').classList.toggle('hidden', $('rl').value !== 'estate');
+$('clr').onclick = clear;
+function clear() { $('f').reset(); $('uid').value = ''; $('un').disabled = false; $('fTitle').textContent = 'Add user'; $('pwHint').textContent = ''; $('fm').innerHTML = ''; $('rl').onchange(); }
+
+async function load() {
+  users = await LS.api('users');
+  const en = Object.fromEntries(estates.map(e => [e.id, e.name]));
+  $('tb').innerHTML = '<thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Estate</th><th>Active</th><th></th></tr></thead><tbody>' +
+    users.map(u => `<tr><td>${LS.esc(u.username)}</td><td>${LS.esc(u.full_name)}</td><td>${u.role}</td><td>${LS.esc(en[u.estate_id] || '')}</td><td>${u.active ? '✓' : '✗'}</td><td><button class="ghost" data-id="${u.id}" style="padding:4px 10px">Edit</button></td></tr>`).join('') + '</tbody>';
+  $('tb').querySelectorAll('button').forEach(b => b.onclick = () => {
+    const u = users.find(x => x.id == b.dataset.id);
+    $('uid').value = u.id; $('un').value = u.username; $('un').disabled = true; $('fn').value = u.full_name;
+    $('rl').value = u.role; $('es').value = u.estate_id || ''; $('ac').checked = u.active; $('pw').value = '';
+    $('pwHint').textContent = '(blank = keep)'; $('fTitle').textContent = 'Edit ' + u.username; $('rl').onchange();
+    scrollTo({ top: 0, behavior: 'smooth' });
+  });
+}
+
+$('f').onsubmit = async ev => {
+  ev.preventDefault();
+  const id = $('uid').value;
+  const body = { username: $('un').value, full_name: $('fn').value, role: $('rl').value, active: $('ac').checked,
+    estate_id: $('rl').value === 'estate' ? +$('es').value : null, password: $('pw').value || null };
+  try {
+    await LS.api(id ? `users/${id}` : 'users', { method: id ? 'PUT' : 'POST', body: JSON.stringify(body) });
+    clear(); $('fm').innerHTML = '<div class="msg ok">Saved</div>'; load();
+  } catch (e) { $('fm').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`; }
+};
+
+(async () => {
+  try {
+    const me = await LS.api('me');
+    if (me.role !== 'admin') throw new Error('Admin only');
+    estates = await LS.api('estates');
+    $('es').innerHTML = estates.map(e => `<option value="${e.id}">${LS.esc(e.name)}</option>`).join('');
+    $('body').classList.remove('hidden'); load();
+  } catch (e) { $('gate').innerHTML = `<div class="msg err">${LS.esc(e.message)} – <a href="./">login</a></div>`; }
+})();
+</script>
+</body>
+</html>

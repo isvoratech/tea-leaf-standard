@@ -1,0 +1,10 @@
+{
+  "name": "Field Diary – Leaf Standard",
+  "short_name": "Leaf Std",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f6f2",
+  "theme_color": "#2e6b3a",
+  "icons": [{ "src": "static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
