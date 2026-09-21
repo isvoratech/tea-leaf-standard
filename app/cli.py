@@ -11,7 +11,7 @@ import sys
 from sqlalchemy import select
 
 from .auth import hash_password
-from .db import Estate, SessionLocal, User, init_db
+from .db import Estate, FactoryAccess, SessionLocal, User, init_db
 
 
 def main(argv):
@@ -51,6 +51,19 @@ def main(argv):
         elif cmd == "list":
             for u in s.scalars(select(User).order_by(User.role, User.username)):
                 print(f"{u.username:20} {u.role:7} estate_id={u.estate_id} active={u.active}")
+        elif cmd == "grant-estate":
+            uname, estate_name = argv[1].lower(), argv[2]
+            u = s.scalar(select(User).where(User.username == uname))
+            if not u:
+                sys.exit(f"No such user {uname}")
+            est = s.scalar(select(Estate).where(Estate.name.ilike(estate_name)))
+            if not est:
+                sys.exit(f"Unknown estate {estate_name}")
+            if s.scalar(select(FactoryAccess).where(FactoryAccess.user_id == u.id, FactoryAccess.estate_id == est.id)):
+                print("Already granted"); return
+            s.add(FactoryAccess(user_id=u.id, estate_id=est.id))
+            s.commit()
+            print(f"{uname} can now submit for {est.name}")
         else:
             print(__doc__)
 

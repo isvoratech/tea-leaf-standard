@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from . import config
 from .auth import (current_user, dashboard_access, hash_password, make_token, require,
                    verify_password)
-from .db import Audit, Estate, Reading, User, get_db
+from .db import Audit, Estate, Reading, User, FactoryAccess, get_db
 
 router = APIRouter(prefix="/api")
 
@@ -62,6 +62,27 @@ def estates(db: Session = Depends(get_db)):
     return [{"id": e.id, "name": e.name, "region": e.region} for e in rows]
 
 
+@router.get("/my-estates")
+def my_estates(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.role != "estate":
+        # admin/ceo can submit for any active estate
+        rows = db.scalars(select(Estate).where(Estate.active).order_by(Estate.sort_order)).all()
+        return [{"id": e.id, "name": e.name} for e in rows]
+
+    # CHANGED: own estate is always first in the list, so the frontend
+    # dropdown defaults to it, with any granted estates following.
+    extra = db.scalars(select(FactoryAccess.estate_id).where(FactoryAccess.user_id == user.id)).all()
+    ids = [user.estate_id] + [i for i in extra if i != user.estate_id]
+
+    own = db.get(Estate, user.estate_id)
+    others = db.scalars(
+        select(Estate).where(Estate.id.in_(ids), Estate.id != user.estate_id).order_by(Estate.sort_order)
+    ).all()
+
+    ordered = ([own] if own else []) + list(others)
+    return [{"id": e.id, "name": e.name} for e in ordered]
+
+
 # ---------------------------------------------------------------- estate entry
 class ReadingIn(BaseModel):
     reading_date: date
@@ -70,7 +91,7 @@ class ReadingIn(BaseModel):
     sample_good_g: float | None = Field(default=None, ge=0)
     sample_total_g: float | None = Field(default=None, gt=0)
     remarks: str = ""
-    estate_id: int | None = None  # admin only
+    estate_id: int | None = None  # admin only, or a factory submitting for a granted estate
 
 
 def _save(body: ReadingIn, user: User, db: Session) -> Reading:
@@ -79,7 +100,18 @@ def _save(body: ReadingIn, user: User, db: Session) -> Reading:
     if user.role == "admin" and body.estate_id:
         estate_id = body.estate_id
     elif user.role == "estate":
-        estate_id = user.estate_id
+        if body.estate_id and body.estate_id != user.estate_id:
+            allowed = db.scalar(
+                select(FactoryAccess).where(
+                    FactoryAccess.user_id == user.id,
+                    FactoryAccess.estate_id == body.estate_id,
+                )
+            )
+            if not allowed:
+                raise HTTPException(403, "You are not authorized to submit for this estate")
+            estate_id = body.estate_id
+        else:
+            estate_id = user.estate_id
     else:
         raise HTTPException(403, "Only estate users or admin can submit")
     if not db.get(Estate, estate_id):
@@ -102,7 +134,8 @@ def _save(body: ReadingIn, user: User, db: Session) -> Reading:
 
     r = db.scalar(select(Reading).where(Reading.estate_id == estate_id,
                                         Reading.reading_date == body.reading_date,
-                                        Reading.session == body.session))
+                                        Reading.session == body.session,
+                                        Reading.submitted_by == user.id))
     now = datetime.utcnow()
     if r is None:
         r = Reading(estate_id=estate_id, reading_date=body.reading_date, session=body.session,
@@ -157,9 +190,28 @@ def submit_bulk(body: BulkIn, user: User = Depends(current_user), db: Session = 
 def my_readings(d: date | None = Query(default=None, alias="date"), days: int = 7,
                 estate_id: int | None = None,
                 user: User = Depends(current_user), db: Session = Depends(get_db)):
-    eid = user.estate_id if user.role == "estate" else estate_id
+    if user.role == "estate":
+        if estate_id and estate_id != user.estate_id:
+            allowed = db.scalar(
+                select(FactoryAccess).where(
+                    FactoryAccess.user_id == user.id,
+                    FactoryAccess.estate_id == estate_id,
+                )
+            )
+            if not allowed:
+                raise HTTPException(403, "You are not authorized to view this estate")
+            eid = estate_id
+        else:
+            eid = user.estate_id
+    else:
+        eid = estate_id
+
     if not eid:
         raise HTTPException(422, "estate_id required")
+
+    # RESTORED: this whole block was missing from the pasted version,
+    # which meant the endpoint always returned nothing (None) to the
+    # frontend regardless of which estate/date was requested.
     end = d or today()
     start = end - timedelta(days=max(0, min(days, 62)) - 1) if days > 1 else end
     rows = db.scalars(select(Reading).where(Reading.estate_id == eid, Reading.reading_date >= start,

@@ -38,7 +38,7 @@ class User(Base):
 class Reading(Base):
     __tablename__ = "ls_readings"
     __table_args__ = (
-        UniqueConstraint("estate_id", "reading_date", "session", name="uq_ls_reading"),
+        UniqueConstraint("estate_id", "reading_date", "session", "submitted_by", name="uq_ls_reading"),
         CheckConstraint("leaf_standard >= 0 AND leaf_standard <= 1", name="ck_ls_range"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -62,6 +62,15 @@ class Audit(Base):
     detail: Mapped[str] = mapped_column(Text, default="")
     at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+
+class FactoryAccess(Base):
+    """Which estates a factory-login is allowed to submit readings for,
+    beyond its own home estate."""
+    __tablename__ = "ls_factory_access"
+    __table_args__ = (UniqueConstraint("user_id", "estate_id", name="uq_factory_access"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("ls_users.id"), index=True)
+    estate_id: Mapped[int] = mapped_column(ForeignKey("ls_estates.id"), index=True)
 
 def init_db() -> None:
     Base.metadata.create_all(engine)

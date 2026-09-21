@@ -51,6 +51,9 @@
 const S = ['morning', 'noon', 'evening'];
 const $ = id => document.getElementById(id);
 let lastHist = [];
+// CHANGED: current[session] is now an ARRAY of readings (one per
+// submitting factory), not a single reading object — since more than
+// one factory can now submit for the same estate/date/session.
 let user = null, cfg = null, estates = [], current = {}, mode = {};
 
 const queue = {
@@ -99,30 +102,41 @@ async function showEntry() {
     $('estateSel').onchange = load;
   } else {
     $('dt').min = LS.addDays(cfg.today, -cfg.edit_days);
+    // Factory users may be authorized to submit for more than one estate
+    estates = await LS.api('my-estates');
+    if (estates.length > 1) {
+      $('estateBox').classList.remove('hidden');
+      $('estateSel').innerHTML = estates.map((e, i) => `<option value="${e.id}" ${i === 0 ? 'selected' : ''}>${LS.esc(e.name)}</option>`).join('');
+      $('estateSel').onchange = load;
+    }
   }
   $('dt').onchange = load;
   window.addEventListener('online', sync);
   await sync(); await load();
 }
 
-function estateId() { return user.role === 'admin' ? +$('estateSel').value : user.estate_id; }
+function estateId() {
+  return (estates.length > 1 || user.role === 'admin') ? +$('estateSel').value : user.estate_id;
+}
 
 async function load() {
   const d = $('dt').value;
   current = {};
   try {
-    const q = user.role === 'admin' ? `&estate_id=${estateId()}` : '';
+    const q = (user.role === 'admin' || estates.length > 1) ? `&estate_id=${estateId()}` : '';
     const rows = await LS.api(`readings?date=${cfg.today}&days=7${q}`);
     LS.store.set('hist_' + estateId(), JSON.stringify(rows));
     renderHistory(rows);
+    // CHANGED: push into an array per session instead of overwriting,
+    // so multiple factories' entries for the same session all survive.
     if (d !== cfg.today || !rows.length) {
       const one = await LS.api(`readings?date=${d}&days=1${q}`);
-      one.forEach(r => current[r.session] = r);
-    } else rows.filter(r => r.reading_date === d).forEach(r => current[r.session] = r);
+      one.forEach(r => (current[r.session] ||= []).push(r));
+    } else rows.filter(r => r.reading_date === d).forEach(r => (current[r.session] ||= []).push(r));
   } catch (e) {
     const rows = JSON.parse(LS.store.get('hist_' + estateId()) || '[]');
     renderHistory(rows);
-    rows.filter(r => r.reading_date === d).forEach(r => current[r.session] = r);
+    rows.filter(r => r.reading_date === d).forEach(r => (current[r.session] ||= []).push(r));
   }
   renderSessions();
 }
@@ -132,13 +146,22 @@ function renderSessions() {
   const locked = user.role !== 'admin' && d < LS.addDays(cfg.today, -cfg.edit_days);
   const q = queue.all().filter(i => i.reading_date === d && (i.estate_id || user.estate_id) === estateId());
   $('sessions').innerHTML = S.map(s => {
-    const r = current[s], pend = q.find(i => i.session === s);
+    const entries = current[s] || [];
+    // "mine" = the entry (if any) this logged-in user submitted for this
+    // estate/date/session. The form below only ever edits this user's
+    // own entry — never someone else's.
+    const mine = entries.find(x => x.submitted_by === user.id);
+    const others = entries.filter(x => x !== mine);
+    const r = mine;
+    const pend = q.find(i => i.session === s);
     const m = 'p';
     const status = pend ? `<span class="pill queued">${LS.t('queued')}</span>` : r ? `<span class="pill done">✓ ${LS.t('submitted')} ${new Date(r.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>` : `<span class="pill todo">${LS.t('pending')}</span>`;
     const val = pend ? (pend.percent ?? (pend.sample_good_g / pend.sample_total_g * 100)) : r ? r.percent : null;
+    const combinedAvg = entries.length ? entries.reduce((a, e) => a + e.percent, 0) / entries.length : null;
     return `<div class="sess" data-s="${s}">
       <div class="head"><b>${LS.t(s)}</b>${status}</div>
       ${val != null ? `<div class="big">${(+val).toFixed(1)}%</div>` : ''}
+      ${entries.length > 1 ? `<div class="muted">${LS.t('combined') || 'Combined avg'} (${entries.length}): ${combinedAvg.toFixed(1)}%${others.length ? ' · ' + others.map(o => (o.percent).toFixed(1) + '%').join(', ') + ' from other factories' : ''}</div>` : ''}
       ${locked ? `<p class="muted">🔒 ${LS.t('locked')}</p>` : `
       <div class="${m === 'p' ? '' : 'hidden'}"><label>${LS.t('pct')}</label><input class="pc" type="number" inputmode="decimal" min="0" max="100" step="0.1" value="${r && m === 'p' ? r.percent : ''}" placeholder="e.g. 68.5"></div>
       <div class="row ${m === 'w' ? '' : 'hidden'}">
@@ -166,7 +189,7 @@ async function save(card, s) {
   const m = 'p';
   const box = card.querySelector('.m');
   const body = { reading_date: $('dt').value, session: s, remarks: card.querySelector('.rm').value };
-  if (user.role === 'admin') body.estate_id = estateId();
+  if (user.role === 'admin' || estates.length > 1) body.estate_id = estateId();
   if (m === 'p') {
     const v = card.querySelector('.pc').value;
     if (v === '' || +v < 0 || +v > 100) { box.innerHTML = '<div class="msg err">0 – 100</div>'; return; }
@@ -179,7 +202,12 @@ async function save(card, s) {
   const btn = card.querySelector('.sv'); btn.disabled = true;
   try {
     const r = await LS.api('readings', { method: 'POST', body: JSON.stringify(body) });
-    current[s] = r; await load();
+    // CHANGED: replace just this user's own entry within the array for
+    // this session, rather than overwriting the whole session's value.
+    const list = (current[s] || []).filter(x => x.submitted_by !== r.submitted_by);
+    list.push(r);
+    current[s] = list;
+    await load();
     msg('netMsg', `${LS.t(s)} – ${LS.t('saved')} ${r.percent.toFixed(1)}%`, 'ok');
   } catch (e) {
     /* server answered with an error -> show it; no answer -> offline queue */
@@ -202,15 +230,23 @@ async function sync() {
 
 function renderHistory(rows) {
   lastHist = rows;
+  // CHANGED: collect an ARRAY of leaf_standard values per date/session
+  // (multiple factories can contribute to the same slot), then average
+  // each slot when rendering — instead of the old single-value overwrite.
   const by = {};
-  rows.forEach(r => (by[r.reading_date] ||= {})[r.session] = r.leaf_standard);
+  rows.forEach(r => {
+    const day = (by[r.reading_date] ||= {});
+    (day[r.session] ||= []).push(r.leaf_standard);
+  });
+  const avgOf = arr => (arr && arr.length) ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
   const days = Object.keys(by).sort().reverse();
   const tg = cfg.target || 0.7, wn = cfg.warn || 0.6;
   $('hist').innerHTML = `<thead><tr><th>${LS.t('date')}</th>${S.map(s => `<th>${LS.t(s)}</th>`).join('')}<th>${LS.t('dayavg')}</th></tr></thead><tbody>` +
     (days.length ? days.map(d => {
-      const v = S.map(s => by[d][s]).filter(x => x != null);
+      const sessionAvgs = S.map(s => avgOf(by[d][s]));
+      const v = sessionAvgs.filter(x => x != null);
       const a = v.length ? v.reduce((p, c) => p + c, 0) / v.length : null;
-      return `<tr><td>${d.slice(8)}/${d.slice(5, 7)}</td>${S.map(s => `<td class="v ${LS.band(by[d][s], tg, wn)}">${LS.pct(by[d][s])}</td>`).join('')}<td class="v ${LS.band(a, tg, wn)}">${LS.pct(a)}</td></tr>`;
+      return `<tr><td>${d.slice(8)}/${d.slice(5, 7)}</td>${sessionAvgs.map(sv => `<td class="v ${LS.band(sv, tg, wn)}">${LS.pct(sv)}</td>`).join('')}<td class="v ${LS.band(a, tg, wn)}">${LS.pct(a)}</td></tr>`;
     }).join('') : `<tr><td colspan="5" class="muted">–</td></tr>`) + '</tbody>';
 }
 
