@@ -5,6 +5,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from . import config
 
+import secrets
+
 _kw = {"connect_args": {"check_same_thread": False}} if config.DATABASE_URL.startswith("sqlite") else {"pool_pre_ping": True}
 engine = create_engine(config.DATABASE_URL, **_kw)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
@@ -29,10 +31,13 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(60), unique=True)
     full_name: Mapped[str] = mapped_column(String(120), default="")
     password_hash: Mapped[str] = mapped_column(String(200))
-    role: Mapped[str] = mapped_column(String(10))  # estate / ceo / admin
+    role: Mapped[str] = mapped_column(String(10))
     estate_id: Mapped[int | None] = mapped_column(ForeignKey("ls_estates.id"), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # A long random secret embedded in this user's personal QR code.
+    # Anyone who scans it is logged in as this user — treat it like a password.
+    qr_token: Mapped[str] = mapped_column(String(64), unique=True, default=lambda: secrets.token_urlsafe(32))
 
 
 class Reading(Base):
@@ -71,6 +76,7 @@ class FactoryAccess(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("ls_users.id"), index=True)
     estate_id: Mapped[int] = mapped_column(ForeignKey("ls_estates.id"), index=True)
+
 
 def init_db() -> None:
     Base.metadata.create_all(engine)

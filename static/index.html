@@ -51,9 +51,9 @@
 const S = ['morning', 'noon', 'evening'];
 const $ = id => document.getElementById(id);
 let lastHist = [];
-// CHANGED: current[session] is now an ARRAY of readings (one per
-// submitting factory), not a single reading object — since more than
-// one factory can now submit for the same estate/date/session.
+// current[session] is an ARRAY of readings (one per submitting factory),
+// not a single reading object — more than one factory can now submit
+// for the same estate/date/session.
 let user = null, cfg = null, estates = [], current = {}, mode = {};
 
 const queue = {
@@ -71,7 +71,22 @@ async function boot() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   try { cfg = await LS.api('config'); LS.store.set('cfg', JSON.stringify(cfg)); }
   catch (e) { cfg = JSON.parse(LS.store.get('cfg') || 'null') || { edit_days: 1, today: LS.iso(new Date()) }; }
-  user = JSON.parse(LS.store.get('user') || 'null');
+
+  // QR auto-login — if the URL has ?token=..., exchange it for a real
+  // session token, then strip it from the address bar so it isn't left
+  // sitting in browser history or accidentally shared via a copied link.
+  const qrToken = new URLSearchParams(location.search).get('token');
+  if (qrToken) {
+    try {
+      const r = await LS.api(`qr-login?token=${encodeURIComponent(qrToken)}`);
+      LS.store.set('token', r.token); LS.store.set('user', JSON.stringify(r.user)); user = r.user;
+      history.replaceState({}, '', location.pathname);
+    } catch (e) {
+      msg('loginMsg', 'This QR code is invalid or has been revoked. Please log in manually.', 'err');
+    }
+  }
+
+  user = user || JSON.parse(LS.store.get('user') || 'null');
   if (LS.store.get('token') && navigator.onLine) {
     try { user = await LS.api('me'); LS.store.set('user', JSON.stringify(user)); } catch (e) { if (e.status === 401) user = null; }
   }
@@ -127,8 +142,8 @@ async function load() {
     const rows = await LS.api(`readings?date=${cfg.today}&days=7${q}`);
     LS.store.set('hist_' + estateId(), JSON.stringify(rows));
     renderHistory(rows);
-    // CHANGED: push into an array per session instead of overwriting,
-    // so multiple factories' entries for the same session all survive.
+    // Push into an array per session instead of overwriting, so multiple
+    // factories' entries for the same session all survive.
     if (d !== cfg.today || !rows.length) {
       const one = await LS.api(`readings?date=${d}&days=1${q}`);
       one.forEach(r => (current[r.session] ||= []).push(r));
@@ -202,8 +217,8 @@ async function save(card, s) {
   const btn = card.querySelector('.sv'); btn.disabled = true;
   try {
     const r = await LS.api('readings', { method: 'POST', body: JSON.stringify(body) });
-    // CHANGED: replace just this user's own entry within the array for
-    // this session, rather than overwriting the whole session's value.
+    // Replace just this user's own entry within the array for this
+    // session, rather than overwriting the whole session's value.
     const list = (current[s] || []).filter(x => x.submitted_by !== r.submitted_by);
     list.push(r);
     current[s] = list;
@@ -230,9 +245,9 @@ async function sync() {
 
 function renderHistory(rows) {
   lastHist = rows;
-  // CHANGED: collect an ARRAY of leaf_standard values per date/session
-  // (multiple factories can contribute to the same slot), then average
-  // each slot when rendering — instead of the old single-value overwrite.
+  // Collect an ARRAY of leaf_standard values per date/session (multiple
+  // factories can contribute to the same slot), then average each slot
+  // when rendering — instead of the last one silently overwriting.
   const by = {};
   rows.forEach(r => {
     const day = (by[r.reading_date] ||= {});

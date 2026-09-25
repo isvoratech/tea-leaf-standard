@@ -69,8 +69,8 @@ def my_estates(user: User = Depends(current_user), db: Session = Depends(get_db)
         rows = db.scalars(select(Estate).where(Estate.active).order_by(Estate.sort_order)).all()
         return [{"id": e.id, "name": e.name} for e in rows]
 
-    # CHANGED: own estate is always first in the list, so the frontend
-    # dropdown defaults to it, with any granted estates following.
+    # Own estate is always first in the list, so the frontend dropdown
+    # defaults to it, with any granted estates following.
     extra = db.scalars(select(FactoryAccess.estate_id).where(FactoryAccess.user_id == user.id)).all()
     ids = [user.estate_id] + [i for i in extra if i != user.estate_id]
 
@@ -157,6 +157,7 @@ def reading_out(r: Reading):
             "session": r.session, "leaf_standard": r.leaf_standard,
             "percent": round(r.leaf_standard * 100, 2), "sample_good_g": r.sample_good_g,
             "sample_total_g": r.sample_total_g, "remarks": r.remarks,
+            "submitted_by": r.submitted_by,
             "submitted_at": r.submitted_at.isoformat() + "Z", "updated_at": r.updated_at.isoformat() + "Z"}
 
 
@@ -209,9 +210,6 @@ def my_readings(d: date | None = Query(default=None, alias="date"), days: int = 
     if not eid:
         raise HTTPException(422, "estate_id required")
 
-    # RESTORED: this whole block was missing from the pasted version,
-    # which meant the endpoint always returned nothing (None) to the
-    # frontend regardless of which estate/date was requested.
     end = d or today()
     start = end - timedelta(days=max(0, min(days, 62)) - 1) if days > 1 else end
     rows = db.scalars(select(Reading).where(Reading.estate_id == eid, Reading.reading_date >= start,
@@ -228,6 +226,16 @@ def delete_reading(rid: int, user: User = Depends(require("admin")), db: Session
     audit(db, user, "reading_delete", f"{rid} estate={r.estate_id} {r.reading_date} {r.session}")
     db.delete(r); db.commit()
     return {"ok": True}
+
+
+@router.get("/qr-login")
+def qr_login(token: str, db: Session = Depends(get_db)):
+    u = db.scalar(select(User).where(User.qr_token == token))
+    if not u or not u.active:
+        raise HTTPException(401, "Invalid or revoked QR code")
+    audit(db, u, "qr_login")
+    db.commit()
+    return {"token": make_token(u.id), "user": user_out(u, db)}
 
 
 # ---------------------------------------------------------------- CEO dashboard

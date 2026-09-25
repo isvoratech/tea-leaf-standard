@@ -5,8 +5,12 @@
   python -m app.cli create-estate-users <default_password>   # one user per estate: calsay, clarendon ...
   python -m app.cli passwd <username> <new_password>
   python -m app.cli list
+  python -m app.cli grant-estate <factory_username> <estate_name>
+  python -m app.cli qr-link <username> [base_url]
+  python -m app.cli regenerate-qr <username>
 """
 import sys
+import secrets
 
 from sqlalchemy import select
 
@@ -64,6 +68,19 @@ def main(argv):
             s.add(FactoryAccess(user_id=u.id, estate_id=est.id))
             s.commit()
             print(f"{uname} can now submit for {est.name}")
+        elif cmd == "qr-link":
+            base_url = argv[2] if len(argv) > 2 else "http://localhost:8015"
+            u = s.scalar(select(User).where(User.username == argv[1].lower()))
+            if not u:
+                sys.exit("No such user")
+            print(f"{base_url}/?token={u.qr_token}")
+        elif cmd == "regenerate-qr":
+            u = s.scalar(select(User).where(User.username == argv[1].lower()))
+            if not u:
+                sys.exit("No such user")
+            u.qr_token = secrets.token_urlsafe(32)
+            s.commit()
+            print(f"New QR token set for {argv[1]} — the old QR code is now invalid and must be reprinted.")
         else:
             print(__doc__)
 
