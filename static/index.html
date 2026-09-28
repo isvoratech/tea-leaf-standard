@@ -7,6 +7,15 @@
 <title>Leaf Standard · Field Diary</title>
 <link rel="manifest" href="manifest.json">
 <link rel="stylesheet" href="static/style.css">
+<!-- Styling for the per-factory breakdown shown on read-only (and
+     multi-factory) session cards -->
+<style>
+  .breakdown { margin-top: 6px; }
+  .breakdown table.mini { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .breakdown table.mini td { padding: 3px 6px 3px 0; border-top: 1px solid rgba(0,0,0,.08); }
+  .breakdown table.mini td:last-child { text-align: right; font-weight: 600; white-space: nowrap; }
+  .breakdown .combined { margin-top: 4px; font-size: 13px; }
+</style>
 </head>
 <body>
 <header class="top">
@@ -52,9 +61,13 @@ const S = ['morning', 'noon', 'evening'];
 const $ = id => document.getElementById(id);
 let lastHist = [];
 // current[session] is an ARRAY of readings (one per submitting factory),
-// not a single reading object — more than one factory can now submit
-// for the same estate/date/session.
+// not a single reading object — more than one factory can submit for the
+// same estate/date/session.
 let user = null, cfg = null, estates = [], current = {}, mode = {};
+// readOnly is true for an estate login whose estate has no factory - it
+// can sign in and see its own history (with per-factory breakdown), but
+// cannot submit readings.
+let readOnly = false;
 
 const queue = {
   all() { try { return JSON.parse(LS.store.get('queue') || '[]'); } catch (e) { return []; } },
@@ -109,13 +122,22 @@ async function showEntry() {
   if (user.role === 'admin') { $('lnkDash').classList.remove('hidden'); $('lnkAdmin').classList.remove('hidden'); }
   $('who').textContent = `${user.full_name || user.username}${user.estate ? ' · ' + user.estate : ''}`;
   $('dt').max = cfg.today; $('dt').value = cfg.today;
+
+  // Estates without a factory log in fine but get a read-only view - they
+  // can see history (with per-factory breakdown) but the entry form is
+  // hidden (see renderSessions below).
+  readOnly = user.role === 'estate' && user.has_factory === false;
+  if (readOnly) {
+    msg('netMsg', 'Your estate has no factory, so readings are entered on your behalf by another estate. You can view your history below (read-only).', 'info');
+  }
+
   if (user.role === 'admin') {
     $('lnkDash').classList.remove('hidden');
     estates = await LS.api('estates');
     $('estateBox').classList.remove('hidden');
     $('estateSel').innerHTML = estates.map(e => `<option value="${e.id}">${LS.esc(e.name)} (${e.region})</option>`).join('');
     $('estateSel').onchange = load;
-  } else {
+  } else if (!readOnly) {
     $('dt').min = LS.addDays(cfg.today, -cfg.edit_days);
     // Factory users may be authorized to submit for more than one estate
     estates = await LS.api('my-estates');
@@ -125,6 +147,8 @@ async function showEntry() {
       $('estateSel').onchange = load;
     }
   }
+  // Read-only estates skip my-estates entirely (it would return empty
+  // anyway) and just view their own estate's history below.
   $('dt').onchange = load;
   window.addEventListener('online', sync);
   await sync(); await load();
@@ -166,18 +190,44 @@ function renderSessions() {
     // estate/date/session. The form below only ever edits this user's
     // own entry — never someone else's.
     const mine = entries.find(x => x.submitted_by === user.id);
-    const others = entries.filter(x => x !== mine);
     const r = mine;
     const pend = q.find(i => i.session === s);
     const m = 'p';
-    const status = pend ? `<span class="pill queued">${LS.t('queued')}</span>` : r ? `<span class="pill done">✓ ${LS.t('submitted')} ${new Date(r.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>` : `<span class="pill todo">${LS.t('pending')}</span>`;
-    const val = pend ? (pend.percent ?? (pend.sample_good_g / pend.sample_total_g * 100)) : r ? r.percent : null;
+    const hasAny = entries.length > 0;
+
+    // Status: a read-only login has no "mine" entry at all, but the
+    // session still counts as submitted if ANY factory entered it.
+    const status = pend
+      ? `<span class="pill queued">${LS.t('queued')}</span>`
+      : readOnly
+        ? (hasAny ? `<span class="pill done">✓ ${LS.t('submitted')}</span>` : `<span class="pill todo">${LS.t('pending')}</span>`)
+        : (r ? `<span class="pill done">✓ ${LS.t('submitted')} ${new Date(r.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>` : `<span class="pill todo">${LS.t('pending')}</span>`);
+
     const combinedAvg = entries.length ? entries.reduce((a, e) => a + e.percent, 0) / entries.length : null;
+    // The big headline number is my own entry when I have one, otherwise
+    // (read-only) the combined average across whoever entered it.
+    const val = pend ? (pend.percent ?? (pend.sample_good_g / pend.sample_total_g * 100))
+      : r ? r.percent
+      : readOnly ? combinedAvg
+      : null;
+
+    // Per-factory breakdown — who entered what. Shown whenever more than
+    // one factory contributed, or the viewer is read-only (so they can
+    // always see which factory entered even a single reading).
+    const showBreakdown = hasAny && (entries.length > 1 || readOnly);
+    const breakdown = showBreakdown ? `<div class="breakdown">
+        <table class="mini"><tbody>${entries.map(e => {
+          const label = e.submitted_by === user.id ? (LS.t('you') || 'You') : LS.esc(e.submitted_by_name || 'Unknown');
+          return `<tr><td>${label}</td><td>${e.percent.toFixed(1)}%</td></tr>`;
+        }).join('')}</tbody></table>
+        ${entries.length > 1 ? `<div class="combined muted">${LS.t('combined') || 'Combined avg'}: <b>${combinedAvg.toFixed(1)}%</b></div>` : ''}
+      </div>` : '';
+
     return `<div class="sess" data-s="${s}">
       <div class="head"><b>${LS.t(s)}</b>${status}</div>
       ${val != null ? `<div class="big">${(+val).toFixed(1)}%</div>` : ''}
-      ${entries.length > 1 ? `<div class="muted">${LS.t('combined') || 'Combined avg'} (${entries.length}): ${combinedAvg.toFixed(1)}%${others.length ? ' · ' + others.map(o => (o.percent).toFixed(1) + '%').join(', ') + ' from other factories' : ''}</div>` : ''}
-      ${locked ? `<p class="muted">🔒 ${LS.t('locked')}</p>` : `
+      ${breakdown}
+      ${locked ? `<p class="muted">🔒 ${LS.t('locked')}</p>` : readOnly ? '' : `
       <div class="${m === 'p' ? '' : 'hidden'}"><label>${LS.t('pct')}</label><input class="pc" type="number" inputmode="decimal" min="0" max="100" step="0.1" value="${r && m === 'p' ? r.percent : ''}" placeholder="e.g. 68.5"></div>
       <div class="row ${m === 'w' ? '' : 'hidden'}">
         <div><label>${LS.t('good')}</label><input class="gd" type="number" inputmode="decimal" min="0" step="0.1" value="${r?.sample_good_g ?? ''}"></div>

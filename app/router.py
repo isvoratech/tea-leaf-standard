@@ -5,13 +5,13 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from . import config
 from .auth import (current_user, dashboard_access, hash_password, make_token, require,
                    verify_password)
-from .db import Audit, Estate, Reading, User, FactoryAccess, get_db
+from .db import Audit, Estate, FactorySupply, Reading, User, get_db
 
 router = APIRouter(prefix="/api")
 
@@ -24,6 +24,45 @@ def audit(db, user, action, detail=""):
     db.add(Audit(user_id=user.id if user else None, action=action, detail=detail))
 
 
+# ---------------------------------------------------------------- who may enter for whom
+def allowed_estate_ids(user: User, db: Session) -> set[int]:
+    """Estates this login may submit / view readings for.
+
+    Only an estate that HAS A FACTORY can enter data. It can always enter
+    for itself, plus whichever estates the admin ticked for it on the
+    Users page. An estate without a factory gets an empty set here - but
+    note that viewing its OWN history no longer depends on this set (see
+    my_readings below); this function now only gates submitting, and
+    viewing estates OTHER than your own.
+    """
+    if user.role != "estate" or not user.estate_id:
+        return set()
+    own = db.get(Estate, user.estate_id)
+    if not own or not own.active or not own.has_factory:
+        return set()
+    ids = {own.id}
+    ids.update(db.scalars(
+        select(FactorySupply.supplied_estate_id)
+        .join(Estate, Estate.id == FactorySupply.supplied_estate_id)
+        .where(FactorySupply.factory_estate_id == own.id, Estate.active)
+    ).all())
+    return ids
+
+
+# ---------------------------------------------------------------- names for display
+def _names_for(db: Session, user_ids: set[int]) -> dict[int, str]:
+    """Map user id -> display name (their estate's name if they're an
+    estate login, else their full name / username). Used so readings can
+    show WHICH factory entered a value, not just an anonymous count."""
+    if not user_ids:
+        return {}
+    users = db.scalars(select(User).where(User.id.in_(user_ids))).all()
+    estate_ids = {u.estate_id for u in users if u.estate_id}
+    estate_names = {e.id: e.name for e in db.scalars(
+        select(Estate).where(Estate.id.in_(estate_ids)))} if estate_ids else {}
+    return {u.id: (estate_names.get(u.estate_id) or u.full_name or u.username) for u in users}
+
+
 # ---------------------------------------------------------------- auth
 class LoginIn(BaseModel):
     username: str
@@ -33,7 +72,9 @@ class LoginIn(BaseModel):
 def user_out(u: User, db: Session):
     est = db.get(Estate, u.estate_id) if u.estate_id else None
     return {"id": u.id, "username": u.username, "full_name": u.full_name, "role": u.role,
-            "estate_id": u.estate_id, "estate": est.name if est else None, "active": u.active}
+            "estate_id": u.estate_id, "estate": est.name if est else None, "active": u.active,
+            # Frontend uses this to decide entry-form vs read-only view.
+            "has_factory": est.has_factory if est else None}
 
 
 @router.post("/login")
@@ -59,27 +100,24 @@ def public_config():
 @router.get("/estates")
 def estates(db: Session = Depends(get_db)):
     rows = db.scalars(select(Estate).where(Estate.active).order_by(Estate.sort_order)).all()
-    return [{"id": e.id, "name": e.name, "region": e.region} for e in rows]
+    return [{"id": e.id, "name": e.name, "region": e.region, "has_factory": e.has_factory} for e in rows]
 
 
 @router.get("/my-estates")
 def my_estates(user: User = Depends(current_user), db: Session = Depends(get_db)):
     if user.role != "estate":
-        # admin/ceo can submit for any active estate
+        # admin/ceo can see every active estate
         rows = db.scalars(select(Estate).where(Estate.active).order_by(Estate.sort_order)).all()
         return [{"id": e.id, "name": e.name} for e in rows]
 
-    # Own estate is always first in the list, so the frontend dropdown
-    # defaults to it, with any granted estates following.
-    extra = db.scalars(select(FactoryAccess.estate_id).where(FactoryAccess.user_id == user.id)).all()
-    ids = [user.estate_id] + [i for i in extra if i != user.estate_id]
+    allowed = allowed_estate_ids(user, db)
+    if not allowed:
+        return []  # this estate has no factory -> nothing to enter (own history is a separate endpoint)
 
-    own = db.get(Estate, user.estate_id)
-    others = db.scalars(
-        select(Estate).where(Estate.id.in_(ids), Estate.id != user.estate_id).order_by(Estate.sort_order)
-    ).all()
-
-    ordered = ([own] if own else []) + list(others)
+    # Own estate first, so the frontend dropdown defaults to it.
+    rest = db.scalars(select(Estate).where(Estate.id.in_(allowed - {user.estate_id}))
+                      .order_by(Estate.sort_order)).all()
+    ordered = [db.get(Estate, user.estate_id)] + list(rest)
     return [{"id": e.id, "name": e.name} for e in ordered]
 
 
@@ -91,7 +129,7 @@ class ReadingIn(BaseModel):
     sample_good_g: float | None = Field(default=None, ge=0)
     sample_total_g: float | None = Field(default=None, gt=0)
     remarks: str = ""
-    estate_id: int | None = None  # admin only, or a factory submitting for a granted estate
+    estate_id: int | None = None  # admin, or a factory entering for another estate it supplies
 
 
 def _save(body: ReadingIn, user: User, db: Session) -> Reading:
@@ -100,18 +138,12 @@ def _save(body: ReadingIn, user: User, db: Session) -> Reading:
     if user.role == "admin" and body.estate_id:
         estate_id = body.estate_id
     elif user.role == "estate":
-        if body.estate_id and body.estate_id != user.estate_id:
-            allowed = db.scalar(
-                select(FactoryAccess).where(
-                    FactoryAccess.user_id == user.id,
-                    FactoryAccess.estate_id == body.estate_id,
-                )
-            )
-            if not allowed:
-                raise HTTPException(403, "You are not authorized to submit for this estate")
-            estate_id = body.estate_id
-        else:
-            estate_id = user.estate_id
+        allowed = allowed_estate_ids(user, db)
+        if not allowed:
+            raise HTTPException(403, "Your estate has no factory, so it cannot submit readings - contact admin")
+        estate_id = body.estate_id or user.estate_id
+        if estate_id not in allowed:
+            raise HTTPException(403, "You are not authorized to submit for this estate")
     else:
         raise HTTPException(403, "Only estate users or admin can submit")
     if not db.get(Estate, estate_id):
@@ -152,12 +184,15 @@ def _save(body: ReadingIn, user: User, db: Session) -> Reading:
     return r
 
 
-def reading_out(r: Reading):
+def reading_out(r: Reading, submitted_by_name: str | None = None):
     return {"id": r.id, "estate_id": r.estate_id, "reading_date": r.reading_date.isoformat(),
             "session": r.session, "leaf_standard": r.leaf_standard,
             "percent": round(r.leaf_standard * 100, 2), "sample_good_g": r.sample_good_g,
             "sample_total_g": r.sample_total_g, "remarks": r.remarks,
             "submitted_by": r.submitted_by,
+            # Name of the factory/estate that submitted this reading, so a
+            # read-only viewer can tell entries from different factories apart.
+            "submitted_by_name": submitted_by_name,
             "submitted_at": r.submitted_at.isoformat() + "Z", "updated_at": r.updated_at.isoformat() + "Z"}
 
 
@@ -165,7 +200,8 @@ def reading_out(r: Reading):
 def submit(body: ReadingIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     r = _save(body, user, db)
     db.commit()
-    return reading_out(r)
+    name = _names_for(db, {user.id}).get(user.id)
+    return reading_out(r, name)
 
 
 class BulkIn(BaseModel):
@@ -176,11 +212,12 @@ class BulkIn(BaseModel):
 def submit_bulk(body: BulkIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Offline queue sync from the phone. Each item is saved independently."""
     results = []
+    name = _names_for(db, {user.id}).get(user.id)
     for it in body.items[:100]:
         try:
             r = _save(it, user, db)
             db.commit()
-            results.append({"ok": True, "reading": reading_out(r)})
+            results.append({"ok": True, "reading": reading_out(r, name)})
         except HTTPException as e:
             db.rollback()
             results.append({"ok": False, "error": e.detail, "item": it.model_dump(mode="json")})
@@ -192,18 +229,12 @@ def my_readings(d: date | None = Query(default=None, alias="date"), days: int = 
                 estate_id: int | None = None,
                 user: User = Depends(current_user), db: Session = Depends(get_db)):
     if user.role == "estate":
-        if estate_id and estate_id != user.estate_id:
-            allowed = db.scalar(
-                select(FactoryAccess).where(
-                    FactoryAccess.user_id == user.id,
-                    FactoryAccess.estate_id == estate_id,
-                )
-            )
-            if not allowed:
-                raise HTTPException(403, "You are not authorized to view this estate")
-            eid = estate_id
-        else:
-            eid = user.estate_id
+        eid = estate_id or user.estate_id
+        # Your OWN estate's history is always viewable, even with no
+        # factory (read-only login). Only viewing a DIFFERENT estate
+        # still requires factory-granted access via allowed_estate_ids.
+        if eid != user.estate_id and eid not in allowed_estate_ids(user, db):
+            raise HTTPException(403, "You are not authorized to view this estate")
     else:
         eid = estate_id
 
@@ -215,7 +246,10 @@ def my_readings(d: date | None = Query(default=None, alias="date"), days: int = 
     rows = db.scalars(select(Reading).where(Reading.estate_id == eid, Reading.reading_date >= start,
                                             Reading.reading_date <= end)
                       .order_by(Reading.reading_date.desc())).all()
-    return [reading_out(r) for r in rows]
+    # Resolve submitter names in one batch and attach to each row so the
+    # frontend can show which factory entered which value.
+    names = _names_for(db, {r.submitted_by for r in rows})
+    return [reading_out(r, names.get(r.submitted_by)) for r in rows]
 
 
 @router.delete("/readings/{rid}")
@@ -251,11 +285,15 @@ def build_summary(db: Session, start: date, end: date):
     reads = db.scalars(select(Reading).where(Reading.reading_date >= start,
                                              Reading.reading_date <= end)).all()
     bucket: dict[tuple, list] = {}
+    slots: dict[int, set] = {}
     days_seen: dict[int, set] = {}
     last: dict[int, datetime] = {}
     remarks: dict[int, list] = {}
     for r in reads:
         bucket.setdefault((r.estate_id, r.session), []).append(r.leaf_standard)
+        # A "slot" is one date + session. Several factories can fill the same
+        # slot for an estate; it still only counts once towards completeness.
+        slots.setdefault(r.estate_id, set()).add((r.reading_date, r.session))
         days_seen.setdefault(r.estate_id, set()).add(r.reading_date)
         if r.estate_id not in last or r.updated_at > last[r.estate_id]:
             last[r.estate_id] = r.updated_at
@@ -266,7 +304,7 @@ def build_summary(db: Session, start: date, end: date):
     rows, groups = [], {"HG": [], "LG": []}
     for e in ests:
         vals = {s: _avg(bucket.get((e.id, s), [])) for s in config.SESSIONS}
-        count = sum(len(bucket.get((e.id, s), [])) for s in config.SESSIONS)
+        count = len(slots.get(e.id, ()))
         row = {"type": "estate", "estate_id": e.id, "name": e.name, "region": e.region, **vals,
                "day_avg": _avg(list(vals.values())), "submitted": count, "expected": 3 * ndays,
                "days_reported": len(days_seen.get(e.id, ())),
@@ -373,6 +411,58 @@ def export(d: date | None = Query(default=None, alias="date"), frm: date | None 
                              headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
+# ---------------------------------------------------------------- admin: factory access (managed from admin.html)
+@router.get("/access")
+def get_access(_: User = Depends(require("admin")), db: Session = Depends(get_db)):
+    ests = db.scalars(select(Estate).order_by(Estate.sort_order)).all()
+    supply: dict[int, list[int]] = {}
+    for fs in db.scalars(select(FactorySupply)).all():
+        supply.setdefault(fs.factory_estate_id, []).append(fs.supplied_estate_id)
+    return {"estates": [{"id": e.id, "name": e.name, "region": e.region, "active": e.active,
+                         "has_factory": e.has_factory} for e in ests],
+            "supply": supply}
+
+
+class FactoryFlagIn(BaseModel):
+    has_factory: bool
+
+
+@router.put("/estates/{eid}/factory")
+def set_factory(eid: int, body: FactoryFlagIn, admin: User = Depends(require("admin")),
+                db: Session = Depends(get_db)):
+    e = db.get(Estate, eid)
+    if not e:
+        raise HTTPException(404, "Estate not found")
+    e.has_factory = body.has_factory
+    if not body.has_factory:
+        db.execute(delete(FactorySupply).where(FactorySupply.factory_estate_id == eid))
+    audit(db, admin, "factory_flag", f"{e.name} has_factory={body.has_factory}")
+    db.commit()
+    return {"ok": True}
+
+
+class SupplyIn(BaseModel):
+    estate_ids: list[int]
+
+
+@router.put("/estates/{eid}/supply")
+def set_supply(eid: int, body: SupplyIn, admin: User = Depends(require("admin")),
+               db: Session = Depends(get_db)):
+    f = db.get(Estate, eid)
+    if not f:
+        raise HTTPException(404, "Estate not found")
+    if not f.has_factory:
+        raise HTTPException(422, f"{f.name} is not marked as having a factory")
+    names = {e.id: e.name for e in db.scalars(select(Estate)).all()}
+    wanted = {i for i in body.estate_ids if i in names and i != eid}
+    db.execute(delete(FactorySupply).where(FactorySupply.factory_estate_id == eid))
+    for i in sorted(wanted):
+        db.add(FactorySupply(factory_estate_id=eid, supplied_estate_id=i))
+    audit(db, admin, "supply_update", f"{f.name} -> {', '.join(names[i] for i in sorted(wanted)) or 'own estate only'}")
+    db.commit()
+    return {"ok": True, "estate_ids": sorted(wanted)}
+
+
 # ---------------------------------------------------------------- admin: users
 class UserIn(BaseModel):
     username: str
@@ -395,6 +485,12 @@ def _check(body: UserIn):
         raise HTTPException(422, "Estate user needs an estate")
     if body.password is not None and len(body.password) < 6:
         raise HTTPException(422, "Password min 6 characters")
+
+
+# Estates no longer need a factory to be given a login - factory-less
+# estates get a read-only login. Enforcement of "can this login submit
+# readings" happens only at submit-time in _save() via
+# allowed_estate_ids(), not at user create/update time.
 
 
 @router.post("/users")

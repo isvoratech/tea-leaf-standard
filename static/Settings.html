@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#2e6b3a">
+<title>Estates &amp; Access · Leaf Standard</title>
+<link rel="stylesheet" href="static/style.css">
+<style>
+  .chk { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-weight: normal; }
+  .chk input { width: auto; margin: 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 0 14px; margin: 8px 0; }
+  .fac { border-top: 1px solid rgba(0,0,0,.12); padding: 14px 0; }
+  .fac:first-of-type { border-top: 0; }
+  .acts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+  .acts button { width: auto; }
+  .tag { font-size: 12px; opacity: .65; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1><span>Estates &amp; Access</span><small>Which estates have a factory, and who can enter for whom</small></h1>
+  <a class="btn ghost" href="./" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Entry</a>
+  <a class="btn ghost" href="admin" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Users</a>
+  <a class="btn ghost" href="dashboard" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">CEO dashboard</a>
+  <button id="btnOut" class="ghost">Logout</button>
+</header>
+
+<main class="wrap">
+  <div id="msg"></div>
+
+  <section class="card">
+    <h2>1. Estates with a factory</h2>
+    <p class="muted">Only these estates can have logins and enter readings. Estates left unticked
+      have their readings entered by a factory (see step 2).</p>
+    <div id="estateList" class="grid"></div>
+  </section>
+
+  <section class="card" style="margin-top:14px">
+    <h2>2. Who can enter for whom</h2>
+    <p class="muted">For each factory, tick every estate it may enter readings for, then press Save.
+      A factory can always enter for its own estate.</p>
+    <div id="factories"></div>
+  </section>
+</main>
+
+<script src="static/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let data = { estates: [], supply: {} };
+
+function msg(text, kind) { $('msg').innerHTML = text ? `<div class="msg ${kind}">${LS.esc(text)}</div>` : ''; }
+
+function render() {
+  const ests = data.estates.filter(e => e.active);
+
+  $('estateList').innerHTML = ests.map(e => `
+    <label class="chk"><input type="checkbox" data-fac="${e.id}" ${e.has_factory ? 'checked' : ''}>
+      ${LS.esc(e.name)} <span class="tag">${LS.esc(e.region)}</span></label>`).join('');
+
+  const factories = ests.filter(e => e.has_factory);
+  $('factories').innerHTML = factories.length ? factories.map(f => {
+    const sel = new Set(data.supply[f.id] || []);
+    return `<div class="fac" data-f="${f.id}">
+      <b>${LS.esc(f.name)}</b> <span class="tag">factory</span>
+      <div class="grid">${ests.map(e => `
+        <label class="chk"><input type="checkbox" value="${e.id}" ${e.id === f.id ? 'checked disabled' : (sel.has(e.id) ? 'checked' : '')}>
+          ${LS.esc(e.name)}</label>`).join('')}</div>
+      <div class="acts">
+        <button type="button" class="ghost" data-act="all">Select all</button>
+        <button type="button" class="ghost" data-act="none">Clear</button>
+        <button type="button" data-act="save">Save</button>
+        <span class="fm muted"></span>
+      </div>
+    </div>`;
+  }).join('') : '<p class="muted">No factory estates yet. Tick one in step 1.</p>';
+}
+
+$('estateList').addEventListener('change', async ev => {
+  const box = ev.target.closest('input[data-fac]');
+  if (!box) return;
+  const id = +box.dataset.fac, on = box.checked;
+  if (!on && !confirm('Turn off this factory? Its access list is cleared and its login will no longer be able to enter readings.')) {
+    box.checked = true; return;
+  }
+  try {
+    await LS.api(`estates/${id}/factory`, { method: 'PUT', body: JSON.stringify({ has_factory: on }) });
+    msg('Saved.', 'ok');
+    await load();
+  } catch (e) { box.checked = !on; msg(e.message, 'err'); }
+});
+
+$('factories').addEventListener('click', async ev => {
+  const btn = ev.target.closest('button[data-act]');
+  if (!btn) return;
+  const card = btn.closest('.fac'), fid = +card.dataset.f;
+  const boxes = [...card.querySelectorAll('.grid input:not(:disabled)')];
+  const act = btn.dataset.act;
+  if (act === 'all') boxes.forEach(b => b.checked = true);
+  else if (act === 'none') boxes.forEach(b => b.checked = false);
+  else {
+    const ids = boxes.filter(b => b.checked).map(b => +b.value);
+    const fm = card.querySelector('.fm');
+    fm.textContent = 'Saving…';
+    try {
+      await LS.api(`estates/${fid}/supply`, { method: 'PUT', body: JSON.stringify({ estate_ids: ids }) });
+      data.supply[fid] = ids;
+      fm.textContent = '✓ Saved';
+    } catch (e) { fm.textContent = e.message; }
+  }
+});
+
+async function load() { data = await LS.api('access'); render(); }
+
+const me = JSON.parse(LS.store.get('user') || 'null');
+if (!me || me.role !== 'admin') {
+  location.href = './';
+} else {
+  $('btnOut').onclick = LS.logout;
+  load().catch(e => msg(e.message, 'err'));
+}
+</script>
+</body>
+</html>

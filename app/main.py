@@ -51,6 +51,9 @@ def _page(name):
 app.add_api_route("/", _page("index.html"), include_in_schema=False)
 app.add_api_route("/dashboard", _page("dashboard.html"), include_in_schema=False)
 app.add_api_route("/admin", _page("admin.html"), include_in_schema=False)
+# CHANGED: /settings route removed. Factory flag + cross-estate access
+# management now lives inside the admin.html user form; static/settings.html
+# should be deleted (it is no longer served or linked from anywhere).
 app.add_api_route("/embed", _page("embed.html"), include_in_schema=False)
 app.add_api_route("/health", lambda: {"ok": True}, include_in_schema=False)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")

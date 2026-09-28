@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Leaf Standard · Users</title>
 <link rel="stylesheet" href="static/style.css">
+<!-- CHANGED: styles moved in from the removed settings.html, for the
+     factory checkbox + estate-access checklist below -->
+<style>
+  .chk { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-weight: normal; }
+  .chk input { width: auto; margin: 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0 12px; margin: 6px 0; }
+</style>
 </head>
 <body>
 <header class="top">
@@ -28,6 +35,21 @@
           <div><label>Password <span class="muted" id="pwHint"></span></label><input id="pw" type="password" autocomplete="new-password"></div>
           <div style="flex:0 0 auto"><label>Active</label><input id="ac" type="checkbox" checked style="width:auto;height:38px"></div>
         </div>
+
+        <!-- CHANGED: factory flag + cross-estate access, moved here from
+             the removed settings.html. Only shown for role = Estate. -->
+        <div id="facBox" class="hidden" style="margin-top:8px">
+          <label class="chk"><input type="checkbox" id="hf"> Has factory (can submit its own readings)</label>
+          <p class="muted" style="margin:2px 0 10px;max-width:460px">
+            Without a factory this login can still sign in and view its own past readings, read-only —
+            another estate's factory enters the data for it (tick it below, in that estate's own access list).
+          </p>
+        </div>
+        <div id="supplyBox" class="hidden" style="margin-bottom:10px">
+          <label>Also enters readings for (besides its own estate)</label>
+          <div id="supplyGrid" class="grid"></div>
+        </div>
+
         <div id="fm"></div>
         <div class="row" style="margin-top:10px"><button style="flex:0 0 auto">Save</button><button type="button" class="ghost" id="clr" style="flex:0 0 auto">Clear</button></div>
       </form>
@@ -38,22 +60,64 @@
 <script src="static/common.js"></script>
 <script>
 const $ = id => document.getElementById(id);
-let estates = [], users = [];
+let estates = [], users = [], access = { estates: [], supply: {} }; // CHANGED: access replaces the old plain "estates" fetch
 $('btnOut').onclick = LS.logout;
-$('rl').onchange = () => $('esBox').classList.toggle('hidden', $('rl').value !== 'estate');
+
+$('rl').onchange = () => {
+  const isEstate = $('rl').value === 'estate';
+  $('esBox').classList.toggle('hidden', !isEstate);
+  // CHANGED: show/hide the new factory + access controls alongside the estate picker
+  $('facBox').classList.toggle('hidden', !isEstate);
+  $('supplyBox').classList.toggle('hidden', !isEstate || !$('hf').checked);
+};
+// CHANGED: toggling "has factory" shows/hides the access checklist
+$('hf').onchange = () => $('supplyBox').classList.toggle('hidden', $('rl').value !== 'estate' || !$('hf').checked);
+// CHANGED: switching the Estate dropdown loads that estate's current factory flag + access list
+$('es').onchange = () => syncFactoryFields(+$('es').value);
 $('clr').onclick = clear;
-function clear() { $('f').reset(); $('uid').value = ''; $('un').disabled = false; $('fTitle').textContent = 'Add user'; $('pwHint').textContent = ''; $('fm').innerHTML = ''; $('rl').onchange(); }
+
+// CHANGED: new helper - populates the factory checkbox + access grid for
+// whichever estate is currently selected in the form.
+function syncFactoryFields(eid) {
+  const e = estates.find(x => x.id === eid);
+  $('hf').checked = !!(e && e.has_factory);
+  renderSupplyGrid(eid);
+  $('rl').onchange();
+}
+
+// CHANGED: new helper - renders the "also enters readings for" checklist
+function renderSupplyGrid(eid) {
+  const sel = new Set(access.supply[eid] || []);
+  $('supplyGrid').innerHTML = estates.map(e => `
+    <label class="chk"><input type="checkbox" value="${e.id}" ${e.id === eid ? 'checked disabled' : (sel.has(e.id) ? 'checked' : '')}>
+      ${LS.esc(e.name)}</label>`).join('');
+}
+
+function clear() {
+  $('f').reset(); $('uid').value = ''; $('un').disabled = false; $('fTitle').textContent = 'Add user';
+  $('pwHint').textContent = ''; $('fm').innerHTML = '';
+  if (estates.length) syncFactoryFields(+$('es').value); else $('rl').onchange();
+}
 
 async function load() {
   users = await LS.api('users');
   const en = Object.fromEntries(estates.map(e => [e.id, e.name]));
-  $('tb').innerHTML = '<thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Estate</th><th>Active</th><th></th></tr></thead><tbody>' +
-    users.map(u => `<tr><td>${LS.esc(u.username)}</td><td>${LS.esc(u.full_name)}</td><td>${u.role}</td><td>${LS.esc(en[u.estate_id] || '')}</td><td>${u.active ? '✓' : '✗'}</td><td><button class="ghost" data-id="${u.id}" style="padding:4px 10px">Edit</button></td></tr>`).join('') + '</tbody>';
+  // CHANGED: added an "Access" column showing Submits / View only for estate logins
+  $('tb').innerHTML = '<thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Estate</th><th>Access</th><th>Active</th><th></th></tr></thead><tbody>' +
+    users.map(u => {
+      const e = estates.find(x => x.id === u.estate_id);
+      const acc = u.role !== 'estate' ? '' : (e && e.has_factory ? 'Submits' : 'View only');
+      return `<tr><td>${LS.esc(u.username)}</td><td>${LS.esc(u.full_name)}</td><td>${u.role}</td>
+        <td>${LS.esc(en[u.estate_id] || '')}</td><td>${acc}</td>
+        <td>${u.active ? '✓' : '✗'}</td><td><button class="ghost" data-id="${u.id}" style="padding:4px 10px">Edit</button></td></tr>`;
+    }).join('') + '</tbody>';
   $('tb').querySelectorAll('button').forEach(b => b.onclick = () => {
     const u = users.find(x => x.id == b.dataset.id);
     $('uid').value = u.id; $('un').value = u.username; $('un').disabled = true; $('fn').value = u.full_name;
     $('rl').value = u.role; $('es').value = u.estate_id || ''; $('ac').checked = u.active; $('pw').value = '';
-    $('pwHint').textContent = '(blank = keep)'; $('fTitle').textContent = 'Edit ' + u.username; $('rl').onchange();
+    $('pwHint').textContent = '(blank = keep)'; $('fTitle').textContent = 'Edit ' + u.username;
+    // CHANGED: load that estate's factory + access state into the form
+    if (u.role === 'estate' && u.estate_id) syncFactoryFields(u.estate_id); else $('rl').onchange();
     scrollTo({ top: 0, behavior: 'smooth' });
   });
 }
@@ -61,10 +125,23 @@ async function load() {
 $('f').onsubmit = async ev => {
   ev.preventDefault();
   const id = $('uid').value;
-  const body = { username: $('un').value, full_name: $('fn').value, role: $('rl').value, active: $('ac').checked,
-    estate_id: $('rl').value === 'estate' ? +$('es').value : null, password: $('pw').value || null };
+  const role = $('rl').value;
+  const estateId = role === 'estate' ? +$('es').value : null;
+  const body = { username: $('un').value, full_name: $('fn').value, role, active: $('ac').checked,
+    estate_id: estateId, password: $('pw').value || null };
   try {
     await LS.api(id ? `users/${id}` : 'users', { method: id ? 'PUT' : 'POST', body: JSON.stringify(body) });
+    // CHANGED: factory flag + cross-estate access are now saved right
+    // here, right after the user is saved, instead of on the removed
+    // Settings page.
+    if (role === 'estate' && estateId) {
+      await LS.api(`estates/${estateId}/factory`, { method: 'PUT', body: JSON.stringify({ has_factory: $('hf').checked }) });
+      if ($('hf').checked) {
+        const ids = [...$('supplyGrid').querySelectorAll('input:checked:not(:disabled)')].map(b => +b.value);
+        await LS.api(`estates/${estateId}/supply`, { method: 'PUT', body: JSON.stringify({ estate_ids: ids }) });
+      }
+    }
+    access = await LS.api('access'); estates = access.estates.filter(e => e.active);
     clear(); $('fm').innerHTML = '<div class="msg ok">Saved</div>'; load();
   } catch (e) { $('fm').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`; }
 };
@@ -73,9 +150,13 @@ $('f').onsubmit = async ev => {
   try {
     const me = await LS.api('me');
     if (me.role !== 'admin') throw new Error('Admin only');
-    estates = await LS.api('estates');
+    // CHANGED: use /api/access instead of /api/estates - it also returns
+    // has_factory and the supply map that the removed Settings page used.
+    access = await LS.api('access'); estates = access.estates.filter(e => e.active);
     $('es').innerHTML = estates.map(e => `<option value="${e.id}">${LS.esc(e.name)}</option>`).join('');
-    $('body').classList.remove('hidden'); load();
+    $('body').classList.remove('hidden');
+    if (estates.length) syncFactoryFields(estates[0].id); else $('rl').onchange();
+    load();
   } catch (e) { $('gate').innerHTML = `<div class="msg err">${LS.esc(e.message)} – <a href="./">login</a></div>`; }
 })();
 </script>

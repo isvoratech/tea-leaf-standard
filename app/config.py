@@ -43,3 +43,28 @@ ESTATES = [
     ("Bearwell", "HG"), ("Holyrood", "HG"), ("Logie", "HG"), ("Wattegoda", "HG"),
     ("Moragalla", "LG"), ("Deniyaya", "LG"), ("Indola", "LG"), ("Kiruwanaganga", "LG"),
 ]
+
+# ---------------------------------------------------------------------------
+# Factories and who they may enter readings for.
+#
+# These are only the STARTING DEFAULTS. The first time the app starts it
+# copies them into the database; after that the admin changes them from the
+# Settings page (/settings) and this list is no longer consulted.
+# A factory can always enter readings for its own estate.
+# ---------------------------------------------------------------------------
+UPCOUNTRY_ALL = [
+    "Calsay", "Clarendon", "Dessford", "Somerset", "Greatwestern", "Mattakelle",
+    "Palmerston", "Radella", "Bearwell", "Holyrood", "Logie", "Wattegoda",
+]
+UPCOUNTRY_FACTORIES = [
+    "Dessford", "Somerset", "Greatwestern", "Mattakelle", "Radella", "Bearwell",
+    "Holyrood", "Wattegoda",
+]
+
+# factory estate -> estates it may enter readings for
+DEFAULT_FACTORY_SUPPLY = {name: list(UPCOUNTRY_ALL) for name in UPCOUNTRY_FACTORIES}
+DEFAULT_FACTORY_SUPPLY.update({
+    "Moragalla": ["Moragalla"],
+    "Deniyaya": ["Deniyaya"],
+    "Kiruwanaganga": ["Kiruwanaganga", "Indola"],
+})
