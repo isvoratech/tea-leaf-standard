@@ -32,7 +32,6 @@ class User(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(60), unique=True)
     full_name: Mapped[str] = mapped_column(String(120), default="")
-    email: Mapped[str| None] = mapped_column(String(120), unique=True, nullable=True)
     password_hash: Mapped[str] = mapped_column(String(200))
     role: Mapped[str] = mapped_column(String(10))
     estate_id: Mapped[int | None] = mapped_column(ForeignKey("ls_estates.id"), nullable=True)

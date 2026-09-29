@@ -38,8 +38,6 @@ WARN = float(os.getenv("LS_WARN", "0.60"))
 EDIT_DAYS = int(os.getenv("LS_EDIT_DAYS", "1"))
 TIMEZONE = os.getenv("LS_TZ", "Asia/Colombo")
 
-GOOGLE_CLIENT_ID = os.getenv("LS_GOOGLE_CLIENT_ID", "").strip()
-GOOGLE_DOMAIN = os.getenv("LS_GOOGLE_DOMAIN", "").strip().lower()
 
 SESSIONS = ["morning", "noon", "evening"]
 
