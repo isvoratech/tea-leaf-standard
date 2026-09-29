@@ -5,12 +5,12 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Leaf Standard · Users</title>
 <link rel="stylesheet" href="static/style.css">
-<!-- CHANGED: styles moved in from the removed settings.html, for the
-     factory checkbox + estate-access checklist below -->
 <style>
   .chk { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-weight: normal; }
   .chk input { width: auto; margin: 0; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0 12px; margin: 6px 0; }
+  .rowbtns { display: flex; gap: 6px; flex-wrap: wrap; }
+  .rowbtns button { padding: 4px 8px; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -18,6 +18,7 @@
   <h1>Leaf Standard — Users<small>Admin</small></h1>
   <a class="btn ghost" href="./" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Entry</a>
   <a class="btn ghost" href="dashboard" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Dashboard</a>
+  <a class="btn ghost" href="qrcodes" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">QR Codes</a>
   <button id="btnOut" class="ghost">Logout</button>
 </header>
 <main class="wrap">
@@ -36,8 +37,6 @@
           <div style="flex:0 0 auto"><label>Active</label><input id="ac" type="checkbox" checked style="width:auto;height:38px"></div>
         </div>
 
-        <!-- CHANGED: factory flag + cross-estate access, moved here from
-             the removed settings.html. Only shown for role = Estate. -->
         <div id="facBox" class="hidden" style="margin-top:8px">
           <label class="chk"><input type="checkbox" id="hf"> Has factory (can submit its own readings)</label>
           <p class="muted" style="margin:2px 0 10px;max-width:460px">
@@ -60,24 +59,19 @@
 <script src="static/common.js"></script>
 <script>
 const $ = id => document.getElementById(id);
-let estates = [], users = [], access = { estates: [], supply: {} }; // CHANGED: access replaces the old plain "estates" fetch
+let estates = [], users = [], access = { estates: [], supply: {} };
 $('btnOut').onclick = LS.logout;
 
 $('rl').onchange = () => {
   const isEstate = $('rl').value === 'estate';
   $('esBox').classList.toggle('hidden', !isEstate);
-  // CHANGED: show/hide the new factory + access controls alongside the estate picker
   $('facBox').classList.toggle('hidden', !isEstate);
   $('supplyBox').classList.toggle('hidden', !isEstate || !$('hf').checked);
 };
-// CHANGED: toggling "has factory" shows/hides the access checklist
 $('hf').onchange = () => $('supplyBox').classList.toggle('hidden', $('rl').value !== 'estate' || !$('hf').checked);
-// CHANGED: switching the Estate dropdown loads that estate's current factory flag + access list
 $('es').onchange = () => syncFactoryFields(+$('es').value);
 $('clr').onclick = clear;
 
-// CHANGED: new helper - populates the factory checkbox + access grid for
-// whichever estate is currently selected in the form.
 function syncFactoryFields(eid) {
   const e = estates.find(x => x.id === eid);
   $('hf').checked = !!(e && e.has_factory);
@@ -85,7 +79,6 @@ function syncFactoryFields(eid) {
   $('rl').onchange();
 }
 
-// CHANGED: new helper - renders the "also enters readings for" checklist
 function renderSupplyGrid(eid) {
   const sel = new Set(access.supply[eid] || []);
   $('supplyGrid').innerHTML = estates.map(e => `
@@ -99,26 +92,52 @@ function clear() {
   if (estates.length) syncFactoryFields(+$('es').value); else $('rl').onchange();
 }
 
+// CHANGED: fetch the QR PNG through LS.api() (sends the Authorization
+// header) and open it as a blob: URL, instead of a plain <img src> /
+// <a href> which cannot carry a Bearer token and gets "Login required".
+async function openQr(uid) {
+  try {
+    const res = await LS.api(`users/${uid}/qr.png`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) { alert(e.message); }
+}
+
 async function load() {
   users = await LS.api('users');
   const en = Object.fromEntries(estates.map(e => [e.id, e.name]));
-  // CHANGED: added an "Access" column showing Submits / View only for estate logins
   $('tb').innerHTML = '<thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Estate</th><th>Access</th><th>Active</th><th></th></tr></thead><tbody>' +
     users.map(u => {
       const e = estates.find(x => x.id === u.estate_id);
       const acc = u.role !== 'estate' ? '' : (e && e.has_factory ? 'Submits' : 'View only');
+      // CHANGED: both are now <button>s wired to JS handlers, not a raw <a>/<img>
+      const qrBtns = u.role === 'estate' ? `
+        <button class="ghost" data-view="${u.id}">QR</button>
+        <button class="ghost" data-qr="${u.id}">New QR</button>` : '';
       return `<tr><td>${LS.esc(u.username)}</td><td>${LS.esc(u.full_name)}</td><td>${u.role}</td>
         <td>${LS.esc(en[u.estate_id] || '')}</td><td>${acc}</td>
-        <td>${u.active ? '✓' : '✗'}</td><td><button class="ghost" data-id="${u.id}" style="padding:4px 10px">Edit</button></td></tr>`;
+        <td>${u.active ? '✓' : '✗'}</td>
+        <td><div class="rowbtns"><button class="ghost" data-id="${u.id}">Edit</button>${qrBtns}</div></td></tr>`;
     }).join('') + '</tbody>';
-  $('tb').querySelectorAll('button').forEach(b => b.onclick = () => {
+  $('tb').querySelectorAll('button[data-id]').forEach(b => b.onclick = () => {
     const u = users.find(x => x.id == b.dataset.id);
     $('uid').value = u.id; $('un').value = u.username; $('un').disabled = true; $('fn').value = u.full_name;
     $('rl').value = u.role; $('es').value = u.estate_id || ''; $('ac').checked = u.active; $('pw').value = '';
     $('pwHint').textContent = '(blank = keep)'; $('fTitle').textContent = 'Edit ' + u.username;
-    // CHANGED: load that estate's factory + access state into the form
     if (u.role === 'estate' && u.estate_id) syncFactoryFields(u.estate_id); else $('rl').onchange();
     scrollTo({ top: 0, behavior: 'smooth' });
+  });
+  // CHANGED: view QR
+  $('tb').querySelectorAll('button[data-view]').forEach(b => b.onclick = () => openQr(b.dataset.view));
+  // CHANGED: regenerate then view the new QR (both through LS.api())
+  $('tb').querySelectorAll('button[data-qr]').forEach(b => b.onclick = async () => {
+    if (!confirm('This invalidates the old printed QR code - it will stop working. Continue?')) return;
+    try {
+      await LS.api(`users/${b.dataset.qr}/qr/regenerate`, { method: 'POST' });
+      await openQr(b.dataset.qr);
+    } catch (e) { alert(e.message); }
   });
 }
 
@@ -131,9 +150,6 @@ $('f').onsubmit = async ev => {
     estate_id: estateId, password: $('pw').value || null };
   try {
     await LS.api(id ? `users/${id}` : 'users', { method: id ? 'PUT' : 'POST', body: JSON.stringify(body) });
-    // CHANGED: factory flag + cross-estate access are now saved right
-    // here, right after the user is saved, instead of on the removed
-    // Settings page.
     if (role === 'estate' && estateId) {
       await LS.api(`estates/${estateId}/factory`, { method: 'PUT', body: JSON.stringify({ has_factory: $('hf').checked }) });
       if ($('hf').checked) {
@@ -150,8 +166,6 @@ $('f').onsubmit = async ev => {
   try {
     const me = await LS.api('me');
     if (me.role !== 'admin') throw new Error('Admin only');
-    // CHANGED: use /api/access instead of /api/estates - it also returns
-    // has_factory and the supply map that the removed Settings page used.
     access = await LS.api('access'); estates = access.estates.filter(e => e.active);
     $('es').innerHTML = estates.map(e => `<option value="${e.id}">${LS.esc(e.name)}</option>`).join('');
     $('body').classList.remove('hidden');

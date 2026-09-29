@@ -18,6 +18,7 @@ import secrets
 
 from sqlalchemy import select
 
+from . import config
 from .auth import hash_password
 from .db import Estate, FactorySupply, SessionLocal, User, init_db
 
@@ -44,17 +45,15 @@ def main(argv):
                 est = s.scalar(select(Estate).where(Estate.name.ilike(argv[4])))
                 if not est:
                     sys.exit(f"Unknown estate {argv[4]}")
-                # CHANGED: removed the has_factory check that used to block
                 # login creation here. Any estate can now have a login -
                 # estates without a factory simply get read-only access to
-                # their own history (enforced at submit-time, not here).
             full = " ".join(argv[5 if role == "estate" else 4:])
             if s.scalar(select(User).where(User.username == uname)):
                 sys.exit("User exists")
             s.add(User(username=uname, password_hash=hash_password(pw), role=role,
                        estate_id=est.id if est else None, full_name=full))
             s.commit(); print(f"Created {role} user {uname}")
-        elif cmd == "create-estate-users":
+        elif cmd == "create-estate-users": 
             pw = argv[1]
             for e in s.scalars(select(Estate).where(Estate.has_factory).order_by(Estate.sort_order)):
                 u = e.name.lower()
@@ -100,7 +99,8 @@ def main(argv):
                     print("Nothing to revoke"); return
                 s.delete(row); s.commit(); print(f"{fac.name} can no longer enter readings for {est.name}")
         elif cmd == "qr-link":
-            base_url = argv[2] if len(argv) > 2 else "http://localhost:8015"
+            
+            base_url = argv[2] if len(argv) > 2 else (config.PUBLIC_URL or "http://localhost:8015")
             u = s.scalar(select(User).where(User.username == argv[1].lower()))
             if not u:
                 sys.exit("No such user")

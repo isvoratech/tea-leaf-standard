@@ -1,7 +1,9 @@
 from datetime import date, datetime, timedelta
 from io import BytesIO
+import secrets  # CHANGED: needed for QR regenerate
 from zoneinfo import ZoneInfo
 
+import qrcode  # CHANGED: QR code image generation
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -520,3 +522,35 @@ def update_user(uid: int, body: UserIn, admin: User = Depends(require("admin")),
         u.password_hash = hash_password(body.password)
     audit(db, admin, "user_update", u.username); db.commit()
     return user_out(u, db)
+
+# ---------------------------------------------------------------- admin: QR codes
+@router.get("/users/{uid}/qr.png")
+def user_qr(uid: int, admin: User = Depends(require("admin")), db: Session = Depends(get_db)):
+    """A scannable QR code that logs this user in directly (no typing
+    username/password). Encodes config.PUBLIC_URL + ?token=<qr_token>,
+    which the frontend exchanges for a session via /api/qr-login."""
+    u = db.get(User, uid)
+    if not u:
+        raise HTTPException(404, "Not found")
+    if not config.PUBLIC_URL:
+        raise HTTPException(500, "LS_PUBLIC_URL is not set in .env - QR codes need the public login URL")
+    url = f"{config.PUBLIC_URL}/?token={u.qr_token}"
+    img = qrcode.make(url, box_size=10, border=2)
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="image/png",
+                             headers={"Content-Disposition": f'inline; filename="qr_{u.username}.png"'})
+
+
+@router.post("/users/{uid}/qr/regenerate")
+def regenerate_qr(uid: int, admin: User = Depends(require("admin")), db: Session = Depends(get_db)):
+    """Invalidates the old QR code (old printed copy stops working) and
+    issues a new token - use if a QR sheet is lost or compromised."""
+    u = db.get(User, uid)
+    if not u:
+        raise HTTPException(404, "Not found")
+    u.qr_token = secrets.token_urlsafe(32)
+    audit(db, admin, "qr_regenerate", u.username)
+    db.commit()
+    return {"ok": True}

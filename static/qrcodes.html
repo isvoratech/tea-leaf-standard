@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Leaf Standard · QR Codes</title>
+<link rel="stylesheet" href="static/style.css">
+<style>
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
+  .qrcard { border: 1px dashed #999; border-radius: 8px; padding: 14px; text-align: center; background: #fff; }
+  .qrcard img { width: 100%; max-width: 200px; height: auto; min-height: 200px; background: #f3f3f3; }
+  .qrcard h3 { margin: 8px 0 2px; font-size: 16px; }
+  .qrcard .u { font-size: 12px; opacity: .65; margin-bottom: 6px; }
+  @media print {
+    header, .noprint { display: none !important; }
+    body { background: #fff; }
+    .qrcard { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1><span>QR Codes</span><small>Print one per estate for QR login</small></h1>
+  <a class="btn ghost" href="admin" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Users</a>
+  <button id="btnOut" class="ghost">Logout</button>
+</header>
+<main class="wrap">
+  <div id="msg"></div>
+  <div class="noprint" style="margin-bottom:12px">
+    <button onclick="window.print()">🖨 Print this page</button>
+  </div>
+  <div id="cards" class="cards"></div>
+</main>
+<script src="static/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+$('btnOut').onclick = LS.logout;
+
+function msg(text, kind) { $('msg').innerHTML = text ? `<div class="msg ${kind}">${LS.esc(text)}</div>` : ''; }
+
+async function load() {
+  const [users, ests] = await Promise.all([LS.api('users'), LS.api('estates')]);
+  const en = Object.fromEntries(ests.map(e => [e.id, e.name]));
+  const rows = users.filter(u => u.role === 'estate' && u.active);
+  if (!rows.length) { $('cards').innerHTML = '<p class="muted">No active estate logins yet.</p>'; return; }
+  $('cards').innerHTML = rows.map(u => `
+    <div class="qrcard" data-uid="${u.id}">
+      <img alt="QR for ${LS.esc(u.username)}">
+      <h3>${LS.esc(en[u.estate_id] || u.full_name || u.username)}</h3>
+      <div class="u">${LS.esc(u.username)}</div>
+    </div>`).join('');
+  // CHANGED: fetch each QR image through LS.api() (sends the auth header)
+  // and set it as a blob: URL - a plain <img src="api/..."> 401s because
+  // browsers cannot attach a Bearer token to an image request.
+  for (const u of rows) {
+    try {
+      const res = await LS.api(`users/${u.id}/qr.png`);
+      const blob = await res.blob();
+      const cardImg = document.querySelector(`.qrcard[data-uid="${u.id}"] img`);
+      if (cardImg) cardImg.src = URL.createObjectURL(blob);
+    } catch (e) { /* leave broken-image placeholder for this one */ }
+  }
+}
+
+const me = JSON.parse(LS.store.get('user') || 'null');
+if (!me || me.role !== 'admin') {
+  location.href = './';
+} else {
+  load().catch(e => msg(e.message, 'err'));
+}
+</script>
+</body>
+</html>

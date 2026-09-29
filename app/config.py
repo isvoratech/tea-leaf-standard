@@ -24,6 +24,10 @@ SECRET_KEY = os.getenv("LS_SECRET_KEY", "change-me")
 TOKEN_HOURS = int(os.getenv("LS_TOKEN_HOURS", "720"))  # 30 days - field phones stay logged in
 # URL prefix Apache proxies to this service
 URL_PREFIX = os.getenv("LS_URL_PREFIX", "/field-diary/leaf-standard").rstrip("/")
+# CHANGED: public-facing base URL (scheme + domain + prefix, NO trailing
+# slash) used to build QR-code login links. Must be set for QR codes to
+# work, since the app itself only ever sees 127.0.0.1 behind the proxy.
+PUBLIC_URL = os.getenv("LS_PUBLIC_URL", "").rstrip("/")
 # Read-only key for embedding the CEO table in the Fertilizer app
 EMBED_KEY = os.getenv("LS_EMBED_KEY", "")
 CORS_ORIGINS = [o.strip() for o in os.getenv("LS_CORS_ORIGINS", "").split(",") if o.strip()]
@@ -33,6 +37,9 @@ WARN = float(os.getenv("LS_WARN", "0.60"))
 # Estate users may edit their own entries for this many days
 EDIT_DAYS = int(os.getenv("LS_EDIT_DAYS", "1"))
 TIMEZONE = os.getenv("LS_TZ", "Asia/Colombo")
+
+GOOGLE_CLIENT_ID = os.getenv("LS_GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_DOMAIN = os.getenv("LS_GOOGLE_DOMAIN", "").strip().lower()
 
 SESSIONS = ["morning", "noon", "evening"]
 
@@ -49,7 +56,7 @@ ESTATES = [
 #
 # These are only the STARTING DEFAULTS. The first time the app starts it
 # copies them into the database; after that the admin changes them from the
-# Settings page (/settings) and this list is no longer consulted.
+# Users page (/admin) and this list is no longer consulted.
 # A factory can always enter readings for its own estate.
 # ---------------------------------------------------------------------------
 UPCOUNTRY_ALL = [

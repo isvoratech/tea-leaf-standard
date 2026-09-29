@@ -32,13 +32,14 @@ class User(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(60), unique=True)
     full_name: Mapped[str] = mapped_column(String(120), default="")
+    email: Mapped[str| None] = mapped_column(String(120), unique=True, nullable=True)
     password_hash: Mapped[str] = mapped_column(String(200))
     role: Mapped[str] = mapped_column(String(10))
     estate_id: Mapped[int | None] = mapped_column(ForeignKey("ls_estates.id"), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    # A long random secret embedded in this user's personal QR code.
-    # Anyone who scans it is logged in as this user - treat it like a password.
+    # A long random secret embedded in this user's personal QR code
+    # Anyone who scans it is logged in as this user
     qr_token: Mapped[str] = mapped_column(String(64), unique=True, default=lambda: secrets.token_urlsafe(32))
 
 
