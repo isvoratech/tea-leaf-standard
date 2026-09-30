@@ -11,11 +11,20 @@
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0 12px; margin: 6px 0; }
   .rowbtns { display: flex; gap: 6px; flex-wrap: wrap; }
   .rowbtns button { padding: 4px 8px; font-size: 12px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+  .tabs button { background: transparent; color: var(--brand); }
+  .tabs button.on { background: var(--brand); color: #fff; }
+  table.ls.ent td, table.ls.ent th { text-align: left; }
+  table.ls.ent td.num, table.ls.ent th.num { text-align: right; font-weight: 600; }
+  .ent small { display: block; color: var(--muted); font-size: 12px; }
+  .pill.upd { background: var(--warn-bg); color: var(--warn); }
+  .pill.new { background: var(--good-bg); color: var(--good); }
+  .pill.blk { background: var(--bad-bg); color: var(--bad); }
 </style>
 </head>
 <body>
 <header class="top">
-  <h1>Leaf Standard — Users<small>Admin</small></h1>
+  <h1>Leaf Standard — Admin<small>Users · Entries · People</small></h1>
   <a class="btn ghost" href="./" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Entry</a>
   <a class="btn ghost" href="dashboard" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Dashboard</a>
   <a class="btn ghost" href="qrcodes" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">QR Codes</a>
@@ -24,6 +33,12 @@
 <main class="wrap">
   <div id="gate"></div>
   <section id="body" class="hidden">
+    <div class="tabs">
+      <button type="button" data-tab="users" class="on">Users</button>
+      <button type="button" data-tab="entries">Entries</button>
+      <button type="button" data-tab="people">People</button>
+    </div>
+    <div id="tab-users">
     <div class="card">
       <h2 id="fTitle">Add user</h2>
       <form id="f">
@@ -31,6 +46,8 @@
         <div class="row">
           <div><label>Username</label><input id="un" required autocapitalize="none"></div>
           <div><label>Full name</label><input id="fn"></div>
+          <!-- Google account linked to this user; blank = Google sign-in not allowed for this user -->
+          <div><label>Google email</label><input id="em" type="email" autocapitalize="none" autocomplete="off" placeholder="optional"></div>
           <div><label>Role</label><select id="rl"><option value="estate">Estate</option><option value="ceo">CEO</option><option value="admin">Admin</option></select></div>
           <div id="esBox"><label>Estate</label><select id="es"></select></div>
           <div><label>Password <span class="muted" id="pwHint"></span></label><input id="pw" type="password" autocomplete="new-password"></div>
@@ -54,6 +71,40 @@
       </form>
     </div>
     <div class="card"><h2>Users</h2><div class="tablewrap"><table class="ls" id="tb"></table></div></div>
+    </div>
+
+    <!-- Entries: who entered which value -->
+    <div id="tab-entries" class="hidden">
+      <div class="card">
+        <div class="dateNav">
+          <div><label>From</label><input type="date" id="eFrom"></div>
+          <div><label>To</label><input type="date" id="eTo"></div>
+          <div><label>Estate</label><select id="eEst" style="width:auto"></select></div>
+          <label class="chk" style="margin:0 0 10px"><input type="checkbox" id="eHist"> Show every change</label>
+          <button type="button" id="eLoad">Show</button>
+          <div style="flex:1"></div>
+          <button type="button" class="ghost" id="eCsv">⬇ CSV</button>
+        </div>
+        <p class="muted" style="font-size:13px;margin:8px 0 0">Default view: the current value of each reading and who saved it last.
+          Tick “Show every change” to see every save, including values later overwritten by someone else.</p>
+      </div>
+      <div class="card">
+        <h2 id="eTitle">Entries</h2>
+        <div id="eMsg"></div>
+        <div class="tablewrap"><table class="ls ent" id="eTb"></table></div>
+      </div>
+    </div>
+
+    <!-- People: everyone who has signed in with Google -->
+    <div id="tab-people" class="hidden">
+      <div class="card">
+        <h2>People</h2>
+        <p class="muted" style="font-size:13px;margin-top:0">Added automatically the first time someone signs in with Google after scanning an estate QR.
+          Block someone to stop them entering data (their past entries stay).</p>
+        <div id="pMsg"></div>
+        <div class="tablewrap"><table class="ls ent" id="pTb"></table></div>
+      </div>
+    </div>
   </section>
 </main>
 <script src="static/common.js"></script>
@@ -88,13 +139,12 @@ function renderSupplyGrid(eid) {
 
 function clear() {
   $('f').reset(); $('uid').value = ''; $('un').disabled = false; $('fTitle').textContent = 'Add user';
-  $('pwHint').textContent = ''; $('fm').innerHTML = '';
+  $('pwHint').textContent = ''; $('fm').innerHTML = ''; $('em').value = '';
   if (estates.length) syncFactoryFields(+$('es').value); else $('rl').onchange();
 }
 
-// CHANGED: fetch the QR PNG through LS.api() (sends the Authorization
-// header) and open it as a blob: URL, instead of a plain <img src> /
-// <a href> which cannot carry a Bearer token and gets "Login required".
+// Fetch the QR PNG through LS.api() (sends the Authorization header) and
+// open it as a blob: URL - a plain <img src>/<a href> cannot carry a Bearer token.
 async function openQr(uid) {
   try {
     const res = await LS.api(`users/${uid}/qr.png`);
@@ -108,30 +158,28 @@ async function openQr(uid) {
 async function load() {
   users = await LS.api('users');
   const en = Object.fromEntries(estates.map(e => [e.id, e.name]));
-  $('tb').innerHTML = '<thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Estate</th><th>Access</th><th>Active</th><th></th></tr></thead><tbody>' +
+  $('tb').innerHTML = '<thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Estate</th><th>Google</th><th>Access</th><th>Active</th><th></th></tr></thead><tbody>' +
     users.map(u => {
       const e = estates.find(x => x.id === u.estate_id);
       const acc = u.role !== 'estate' ? '' : (e && e.has_factory ? 'Submits' : 'View only');
-      // CHANGED: both are now <button>s wired to JS handlers, not a raw <a>/<img>
       const qrBtns = u.role === 'estate' ? `
         <button class="ghost" data-view="${u.id}">QR</button>
         <button class="ghost" data-qr="${u.id}">New QR</button>` : '';
       return `<tr><td>${LS.esc(u.username)}</td><td>${LS.esc(u.full_name)}</td><td>${u.role}</td>
-        <td>${LS.esc(en[u.estate_id] || '')}</td><td>${acc}</td>
+        <td>${LS.esc(en[u.estate_id] || '')}</td><td>${LS.esc(u.email || '')}</td><td>${acc}</td>
         <td>${u.active ? '✓' : '✗'}</td>
         <td><div class="rowbtns"><button class="ghost" data-id="${u.id}">Edit</button>${qrBtns}</div></td></tr>`;
     }).join('') + '</tbody>';
   $('tb').querySelectorAll('button[data-id]').forEach(b => b.onclick = () => {
     const u = users.find(x => x.id == b.dataset.id);
     $('uid').value = u.id; $('un').value = u.username; $('un').disabled = true; $('fn').value = u.full_name;
+    $('em').value = u.email || '';
     $('rl').value = u.role; $('es').value = u.estate_id || ''; $('ac').checked = u.active; $('pw').value = '';
     $('pwHint').textContent = '(blank = keep)'; $('fTitle').textContent = 'Edit ' + u.username;
     if (u.role === 'estate' && u.estate_id) syncFactoryFields(u.estate_id); else $('rl').onchange();
     scrollTo({ top: 0, behavior: 'smooth' });
   });
-  // CHANGED: view QR
   $('tb').querySelectorAll('button[data-view]').forEach(b => b.onclick = () => openQr(b.dataset.view));
-  // CHANGED: regenerate then view the new QR (both through LS.api())
   $('tb').querySelectorAll('button[data-qr]').forEach(b => b.onclick = async () => {
     if (!confirm('This invalidates the old printed QR code - it will stop working. Continue?')) return;
     try {
@@ -147,7 +195,7 @@ $('f').onsubmit = async ev => {
   const role = $('rl').value;
   const estateId = role === 'estate' ? +$('es').value : null;
   const body = { username: $('un').value, full_name: $('fn').value, role, active: $('ac').checked,
-    estate_id: estateId, password: $('pw').value || null };
+    estate_id: estateId, email: $('em').value.trim().toLowerCase() || null, password: $('pw').value || null };
   try {
     await LS.api(id ? `users/${id}` : 'users', { method: id ? 'PUT' : 'POST', body: JSON.stringify(body) });
     if (role === 'estate' && estateId) {
@@ -162,15 +210,101 @@ $('f').onsubmit = async ev => {
   } catch (e) { $('fm').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`; }
 };
 
+// ---------------------------------------------------------------- tabs
+function showTab(name) {
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  ['users', 'entries', 'people'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== name));
+  history.replaceState(null, '', name === 'users' ? location.pathname : '#' + name);
+  if (name === 'entries' && !entriesLoaded) loadEntries();
+  if (name === 'people') loadPeople();
+}
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+
+// ---------------------------------------------------------------- entries
+let entriesLoaded = false, entryRows = [];
+const SESS = { morning: 'Morning', noon: 'Noon', evening: 'Evening' };
+const when = s => new Date(s).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+const who = r => r.entered_by_name
+  ? `${LS.esc(r.entered_by_name)}${r.entered_by_email ? `<small>${LS.esc(r.entered_by_email)}</small>` : ''}`
+  : '<span class="muted">– (before Google sign-in)</span>';
+
+async function loadEntries(onlyEmail) {
+  entriesLoaded = true;
+  const hist = $('eHist').checked;
+  const q = `from=${$('eFrom').value}&to=${$('eTo').value}${$('eEst').value ? '&estate_id=' + $('eEst').value : ''}${hist ? '&history=true' : ''}`;
+  $('eMsg').innerHTML = ''; $('eTb').innerHTML = '<tbody><tr><td class="muted">Loading…</td></tr></tbody>';
+  try {
+    entryRows = await LS.api('admin/entries?' + q);
+    if (typeof onlyEmail === 'string') entryRows = entryRows.filter(r => r.entered_by_email === onlyEmail);
+    $('eTitle').textContent = `${hist ? 'Change history' : 'Entries'}${typeof onlyEmail === 'string' ? ' by ' + onlyEmail : ''} (${entryRows.length})`;
+    if (!entryRows.length) { $('eTb').innerHTML = '<tbody><tr><td class="muted">No entries in this period.</td></tr></tbody>'; return; }
+    $('eTb').innerHTML = `<thead><tr><th>Estate</th><th>Date</th><th>Session</th><th class="num">Value</th>${hist ? '<th>Action</th>' : ''}<th>Entered by</th><th>Time</th></tr></thead><tbody>` +
+      entryRows.map(r => {
+        const via = r.via && r.via !== r.estate ? `<small>via ${LS.esc(r.via)}</small>` : '';
+        const act = hist ? `<td><span class="pill ${r.action === 'create' ? 'new' : 'upd'}">${r.action === 'create' ? 'New' : 'Updated'}</span></td>` : '';
+        const rem = !hist && r.remarks ? ` title="${LS.esc(r.remarks)}"` : '';
+        return `<tr><td>${LS.esc(r.estate)}${via}</td><td>${r.date}</td><td>${SESS[r.session] || r.session}</td>
+          <td class="num"${rem}>${r.percent.toFixed(1)}%${rem ? ' 💬' : ''}</td>${act}<td>${who(r)}</td><td>${when(r.time)}</td></tr>`;
+      }).join('') + '</tbody>';
+  } catch (e) { $('eTb').innerHTML = ''; $('eMsg').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`; }
+}
+$('eLoad').onclick = loadEntries;
+$('eHist').onchange = loadEntries;
+
+$('eCsv').onclick = () => {
+  if (!entryRows.length) return;
+  const hist = entryRows[0].action !== undefined;
+  const head = ['Estate', 'Via', 'Date', 'Session', 'Value %', ...(hist ? ['Action'] : []), 'Entered by', 'Email', 'Time'];
+  const cell = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const lines = [head.map(cell).join(',')].concat(entryRows.map(r => [r.estate, r.via || '', r.date, SESS[r.session] || r.session, r.percent,
+    ...(hist ? [r.action] : []), r.entered_by_name || '', r.entered_by_email || '', new Date(r.time).toLocaleString('en-GB')].map(cell).join(',')));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv' }));
+  a.download = `Leaf_Standard_entries_${$('eFrom').value}_to_${$('eTo').value}${hist ? '_history' : ''}.csv`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+};
+
+// ---------------------------------------------------------------- people
+async function loadPeople() {
+  $('pMsg').innerHTML = '';
+  try {
+    const people = await LS.api('admin/people');
+    if (!people.length) { $('pTb').innerHTML = '<tbody><tr><td class="muted">Nobody has signed in with Google yet.</td></tr></tbody>'; return; }
+    $('pTb').innerHTML = '<thead><tr><th>Name</th><th>Email</th><th class="num">Saves</th><th>First seen</th><th>Last seen</th><th>Status</th><th></th></tr></thead><tbody>' +
+      people.map(p => `<tr><td>${LS.esc(p.name)}</td><td>${LS.esc(p.email)}</td><td class="num">${p.saves}</td>
+        <td>${when(p.first_seen)}</td><td>${when(p.last_seen)}</td>
+        <td>${p.blocked ? '<span class="pill blk">Blocked</span>' : '<span class="pill new">Active</span>'}</td>
+        <td><div class="rowbtns"><button class="ghost" data-pid="${p.id}" data-b="${p.blocked ? 0 : 1}">${p.blocked ? 'Unblock' : 'Block'}</button>
+          <button class="ghost" data-pmail="${LS.esc(p.email)}">Entries</button></div></td></tr>`).join('') + '</tbody>';
+    $('pTb').querySelectorAll('button[data-pid]').forEach(b => b.onclick = async () => {
+      const block = b.dataset.b === '1';
+      if (block && !confirm('Block this person? They will not be able to enter data. Their past entries stay.')) return;
+      try { await LS.api(`admin/people/${b.dataset.pid}/block`, { method: 'PUT', body: JSON.stringify({ blocked: block }) }); loadPeople(); }
+      catch (e) { $('pMsg').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`; }
+    });
+    // Jump to the change history filtered down to this person
+    $('pTb').querySelectorAll('button[data-pmail]').forEach(b => b.onclick = () => {
+      $('eHist').checked = true; $('eEst').value = '';
+      entriesLoaded = true; showTab('entries'); loadEntries(b.dataset.pmail);
+    });
+  } catch (e) { $('pMsg').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`; }
+}
+
 (async () => {
   try {
     const me = await LS.api('me');
     if (me.role !== 'admin') throw new Error('Admin only');
     access = await LS.api('access'); estates = access.estates.filter(e => e.active);
     $('es').innerHTML = estates.map(e => `<option value="${e.id}">${LS.esc(e.name)}</option>`).join('');
+    // Entries filters: default to the last 7 days, all estates
+    const cfg = await LS.api('config');
+    $('eTo').value = cfg.today; $('eTo').max = cfg.today; $('eFrom').value = LS.addDays(cfg.today, -6);
+    $('eEst').innerHTML = '<option value="">All estates</option>' + estates.map(e => `<option value="${e.id}">${LS.esc(e.name)}</option>`).join('');
     $('body').classList.remove('hidden');
     if (estates.length) syncFactoryFields(estates[0].id); else $('rl').onchange();
     load();
+    const h = location.hash.slice(1);
+    if (h === 'entries' || h === 'people') showTab(h);
   } catch (e) { $('gate').innerHTML = `<div class="msg err">${LS.esc(e.message)} – <a href="./">login</a></div>`; }
 })();
 </script>

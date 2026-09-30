@@ -36,11 +36,28 @@
       <div id="loginMsg"></div>
       <button style="width:100%;margin-top:12px" data-t="login">Login</button>
     </form>
+    <!-- Google Sign-In (shown only when LS_GOOGLE_CLIENT_ID is set and Google's script loads) -->
+    <div id="gBox" class="hidden">
+      <div class="muted" style="text-align:center;margin:14px 0 8px">— or —</div>
+      <div class="gbtn" style="display:flex;justify-content:center"></div>
+    </div>
+  </section>
+
+  <!-- who is entering data (Google, once per phone, after the estate QR login) -->
+  <section id="whoCard" class="card hidden">
+    <h2 data-t="whoTitle">Who is entering data?</h2>
+    <p class="muted" data-t="whoSub">Sign in with Google once on this phone. Your name is saved with every reading you enter.</p>
+    <div id="whoMsg"></div>
+    <div id="whoBox" class="hidden"><div class="gbtn" style="display:flex;justify-content:center;margin-top:8px"></div></div>
   </section>
 
   <!-- entry -->
   <section id="entry" class="hidden">
     <div class="card">
+      <div id="personBar" class="hidden" style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:14px">
+        <span>👤 <b id="personName"></b> <span class="muted" id="personEmail"></span></span>
+        <button type="button" class="ghost" id="swPerson" style="padding:3px 8px;font-size:12px;margin-left:auto" data-t="notYou">Not you?</button>
+      </div>
       <div class="row">
         <div id="estateBox" class="hidden"><label data-t="estate">Estate</label><select id="estateSel"></select></div>
         <div><label data-t="date">Date</label><input id="dt" type="date"></div>
@@ -85,25 +102,48 @@ async function boot() {
   try { cfg = await LS.api('config'); LS.store.set('cfg', JSON.stringify(cfg)); }
   catch (e) { cfg = JSON.parse(LS.store.get('cfg') || 'null') || { edit_days: 1, today: LS.iso(new Date()) }; }
 
-  // QR auto-login — if the URL has ?token=..., exchange it for a real
-  // session token, then strip it from the address bar so it isn't left
-  // sitting in browser history or accidentally shared via a copied link.
+  // QR auto-login — validate a saved session before exchanging the QR token,
+  // since the QR exchange returns an estate-only token without Google identity.
   const qrToken = new URLSearchParams(location.search).get('token');
+  let sessionChecked = false;
   if (qrToken) {
-    try {
-      const r = await LS.api(`qr-login?token=${encodeURIComponent(qrToken)}`);
-      LS.store.set('token', r.token); LS.store.set('user', JSON.stringify(r.user)); user = r.user;
-      history.replaceState({}, '', location.pathname);
-    } catch (e) {
-      msg('loginMsg', 'This QR code is invalid or has been revoked. Please log in manually.', 'err');
+    history.replaceState({}, '', location.pathname);
+    const savedToken = LS.store.get('token');
+    if (savedToken) {
+      try {
+        user = await LS.api('me');
+        LS.store.set('user', JSON.stringify(user));
+      } catch (e) {
+        if (e.status === 401) user = null;
+      }
+      sessionChecked = true;
+    }
+    if (!savedToken || !LS.store.get('token')) {
+      try {
+        const r = await LS.api(`qr-login?token=${encodeURIComponent(qrToken)}`);
+        LS.store.set('token', r.token); LS.store.set('user', JSON.stringify(r.user)); user = r.user;
+      } catch (e) {
+        msg('loginMsg', 'This QR code is invalid or has been revoked. Please log in manually.', 'err');
+      }
     }
   }
 
   user = user || JSON.parse(LS.store.get('user') || 'null');
-  if (LS.store.get('token') && navigator.onLine) {
+  if (LS.store.get('token') && navigator.onLine && !sessionChecked) {
     try { user = await LS.api('me'); LS.store.set('user', JSON.stringify(user)); } catch (e) { if (e.status === 401) user = null; }
   }
-  user ? showEntry() : $('loginCard').classList.remove('hidden');
+  if (user) showEntry();
+  else { $('loginCard').classList.remove('hidden'); initGoogle(); }
+}
+
+// Google Sign-In: returning users with a saved session never reach here -
+// boot() opens their page directly. This only runs on the login screen.
+function initGoogle() {
+  LS.googleButton($('gBox'), cfg && cfg.google_client_id, u => {
+    user = u;
+    if (u.role === 'ceo') { location.href = 'dashboard'; return; }
+    msg('loginMsg', ''); $('loginCard').classList.add('hidden'); showEntry();
+  }, e => { if (e.status) msg('loginMsg', e.message, 'err'); });   // no status = Google script offline; password login still works
 }
 
 $('loginForm').onsubmit = async ev => {
@@ -116,11 +156,48 @@ $('loginForm').onsubmit = async ev => {
   } catch (e) { msg('loginMsg', e.message, 'err'); }
 };
 
+// Estate logins that can submit must say WHO is entering (Google, once per
+// phone). Read-only estates (no factory) and admin skip this step.
+function needsPerson() {
+  return user.role === 'estate' && user.has_factory !== false && !user.person;
+}
+
+function askPerson() {
+  $('entry').classList.add('hidden'); $('whoCard').classList.remove('hidden'); $('btnOut').classList.remove('hidden');
+  $('who').textContent = `${user.full_name || user.username}${user.estate ? ' · ' + user.estate : ''}`;
+  msg('whoMsg', '');
+  if (!cfg.google_client_id) { msg('whoMsg', 'Google sign-in is not set up yet - contact admin.', 'err'); return; }
+  if (!navigator.onLine) { msg('whoMsg', 'Connect to the internet once to sign in with Google.', 'info'); }
+  LS.googleButton($('whoBox'), cfg.google_client_id, u => {
+    user = u; msg('whoMsg', '');
+    $('whoCard').classList.add('hidden'); showEntry();
+  }, e => msg('whoMsg', e.message, 'err'), 'identify');
+}
+
+// "Not you?" - forget the person on this phone (the estate QR login stays)
+async function switchPerson() {
+  LS.googleForget();
+  try {
+    const r = await LS.api('forget-person', { method: 'POST' });
+    LS.store.set('token', r.token); user = r.user;
+  } catch (e) { user.person = null; }
+  LS.store.set('user', JSON.stringify(user));
+  askPerson();
+}
+
+let entryWired = false;
 async function showEntry() {
   if (user.role === 'ceo') { location.href = 'dashboard'; return; }
+  if (needsPerson()) { askPerson(); return; }
   $('entry').classList.remove('hidden'); $('btnOut').classList.remove('hidden');
   if (user.role === 'admin') { $('lnkDash').classList.remove('hidden'); $('lnkAdmin').classList.remove('hidden'); }
   $('who').textContent = `${user.full_name || user.username}${user.estate ? ' · ' + user.estate : ''}`;
+  $('personBar').classList.toggle('hidden', !user.person);
+  if (user.person) {
+    $('personName').textContent = user.person.name;
+    $('personEmail').textContent = `(${user.person.email})`;
+    $('swPerson').onclick = switchPerson;
+  }
   $('dt').max = cfg.today; $('dt').value = cfg.today;
 
   // Estates without a factory log in fine but get a read-only view - they
@@ -150,7 +227,7 @@ async function showEntry() {
   // Read-only estates skip my-estates entirely (it would return empty
   // anyway) and just view their own estate's history below.
   $('dt').onchange = load;
-  window.addEventListener('online', sync);
+  if (!entryWired) { window.addEventListener('online', sync); entryWired = true; }
   await sync(); await load();
 }
 
@@ -226,6 +303,7 @@ function renderSessions() {
     return `<div class="sess" data-s="${s}">
       <div class="head"><b>${LS.t(s)}</b>${status}</div>
       ${val != null ? `<div class="big">${(+val).toFixed(1)}%</div>` : ''}
+      ${!pend && r && r.entered_by_name ? `<div class="muted" style="font-size:13px">${LS.t('by')} ${LS.esc(r.entered_by_name)}</div>` : ''}
       ${breakdown}
       ${locked ? `<p class="muted">🔒 ${LS.t('locked')}</p>` : readOnly ? '' : `
       <div class="${m === 'p' ? '' : 'hidden'}"><label>${LS.t('pct')}</label><input class="pc" type="number" inputmode="decimal" min="0" max="100" step="0.1" value="${r && m === 'p' ? r.percent : ''}" placeholder="e.g. 68.5"></div>
@@ -276,6 +354,7 @@ async function save(card, s) {
     msg('netMsg', `${LS.t(s)} – ${LS.t('saved')} ${r.percent.toFixed(1)}%`, 'ok');
   } catch (e) {
     /* server answered with an error -> show it; no answer -> offline queue */
+    if (e.status === 428) { user.person = null; LS.store.set('user', JSON.stringify(user)); askPerson(); return; }
     if (e.status) { box.innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`; btn.disabled = false; return; }
     queue.add(body); msg('netMsg', LS.t('offline'), 'info'); renderSessions();
   }

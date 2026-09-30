@@ -1,5 +1,5 @@
 """Stdlib-only password hashing + HMAC signed tokens (no extra pip packages)."""
-import base64, hashlib, hmac, json, os, time
+import base64, hashlib, hmac, json, os, time, urllib.parse, urllib.request
 
 from fastapi import Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -27,30 +27,65 @@ def _b64(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).decode().rstrip("=")
 
 
-def make_token(user_id: int) -> str:
-    body = _b64(json.dumps({"u": user_id, "exp": int(time.time()) + config.TOKEN_HOURS * 3600}).encode())
+def make_token(user_id: int, person_id: int | None = None) -> str:
+    """Session token. "u" = the login (estate QR / admin / CEO account).
+    "p" = the person (Google account) using that login on this phone."""
+    payload = {"u": user_id, "exp": int(time.time()) + config.TOKEN_HOURS * 3600}
+    if person_id:
+        payload["p"] = person_id
+    body = _b64(json.dumps(payload).encode())
     sig = _b64(hmac.new(config.SECRET_KEY.encode(), body.encode(), hashlib.sha256).digest())
     return f"{body}.{sig}"
 
 
-def read_token(token: str) -> int | None:
+def _decode(token: str) -> dict | None:
     try:
         body, sig = token.split(".")
         good = _b64(hmac.new(config.SECRET_KEY.encode(), body.encode(), hashlib.sha256).digest())
         if not hmac.compare_digest(sig, good):
             return None
         data = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
-        return data["u"] if data["exp"] > time.time() else None
+        return data if data["exp"] > time.time() else None
     except Exception:
         return None
 
 
+def read_token(token: str) -> int | None:
+    data = _decode(token)
+    return data["u"] if data else None
+
+
+def verify_google_id_token(id_token: str) -> dict | None:
+    """Verify a Google ID token with Google's tokeninfo endpoint (stdlib only)."""
+    if not config.GOOGLE_CLIENT_ID or not id_token:
+        return None
+    url = "https://oauth2.googleapis.com/tokeninfo?" + urllib.parse.urlencode({"id_token": id_token})
+    try:
+        with urllib.request.urlopen(url, timeout=8) as r:
+            data = json.loads(r.read())
+    except Exception:
+        return None
+    if data.get("aud") != config.GOOGLE_CLIENT_ID:
+        return None
+    if data.get("iss") not in ("accounts.google.com", "https://accounts.google.com"):
+        return None
+    if str(data.get("email_verified")).lower() != "true":
+        return None
+    if int(data.get("exp", 0)) < time.time():
+        return None
+    if config.GOOGLE_ALLOWED_DOMAIN and (data.get("hd") or "").lower() != config.GOOGLE_DOMAIN:
+        return None
+    return data
+
+
 def current_user(authorization: str = Header(default=""), db: Session = Depends(get_db)) -> User:
     token = authorization.removeprefix("Bearer ").strip()
-    uid = read_token(token) if token else None
-    user = db.get(User, uid) if uid else None
+    data = _decode(token) if token else None
+    user = db.get(User, data["u"]) if data else None
     if not user or not user.active:
         raise HTTPException(401, "Login required")
+    # Not a DB column - just carried for this request (see router._person).
+    user.person_id = data.get("p")
     return user
 
 

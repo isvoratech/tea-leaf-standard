@@ -7,13 +7,13 @@ import qrcode  # CHANGED: QR code image generation
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from . import config
 from .auth import (current_user, dashboard_access, hash_password, make_token, require,
-                   verify_password)
-from .db import Audit, Estate, FactorySupply, Reading, User, get_db
+                   verify_google_id_token, verify_password)
+from .db import Audit, Estate, FactorySupply, Person, Reading, ReadingLog, User, get_db
 
 router = APIRouter(prefix="/api")
 
@@ -65,18 +65,51 @@ def _names_for(db: Session, user_ids: set[int]) -> dict[int, str]:
     return {u.id: (estate_names.get(u.estate_id) or u.full_name or u.username) for u in users}
 
 
+# ---------------------------------------------------------------- person (Google identity)
+def _person(db: Session, user: User) -> Person | None:
+    """The person attached to this session (see /identify), unless blocked."""
+    pid = getattr(user, "person_id", None)
+    p = db.get(Person, pid) if pid else None
+    return p if p and not p.blocked else None
+
+
+def _person_out(p: Person | None):
+    return {"id": p.id, "name": p.name, "email": p.email} if p else None
+
+
+def _upsert_person(db: Session, info: dict) -> Person:
+    """Find or create the person for a verified Google token. No approval
+    needed - the first sign-in simply records who they are."""
+    email = info["email"].strip().lower()
+    p = db.scalar(select(Person).where(Person.email == email))
+    now = datetime.utcnow()
+    if p is None:
+        p = Person(email=email, name=info.get("name") or email, google_sub=info.get("sub"),
+                   first_seen=now, last_seen=now, blocked=False)
+        db.add(p)
+    else:
+        p.name = info.get("name") or p.name
+        p.google_sub = p.google_sub or info.get("sub")
+        p.last_seen = now
+    db.flush()
+    return p
+
+
 # ---------------------------------------------------------------- auth
 class LoginIn(BaseModel):
     username: str
     password: str
 
 
-def user_out(u: User, db: Session):
+def user_out(u: User, db: Session, person: Person | None = None):
     est = db.get(Estate, u.estate_id) if u.estate_id else None
     return {"id": u.id, "username": u.username, "full_name": u.full_name, "role": u.role,
             "estate_id": u.estate_id, "estate": est.name if est else None, "active": u.active,
             # Frontend uses this to decide entry-form vs read-only view.
-            "has_factory": est.has_factory if est else None}
+            "has_factory": est.has_factory if est else None,
+            "email": u.email,
+            # Who is using this login on this phone (Google account), or null.
+            "person": _person_out(person)}
 
 
 @router.post("/login")
@@ -88,15 +121,61 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
     return {"token": make_token(u.id), "user": user_out(u, db)}
 
 
+class GoogleIn(BaseModel):
+    credential: str
+
+
+@router.post("/google-login")
+def google_login(body: GoogleIn, db: Session = Depends(get_db)):
+    """Login-page Google button: signs in the user whose email the admin
+    linked on the Users page (mainly CEO / admin)."""
+    info = verify_google_id_token(body.credential)
+    if not info:
+        raise HTTPException(401, "Google sign-in failed")
+    email = info["email"].strip().lower()
+    u = db.scalar(select(User).where(User.email == email))
+    if not u or not u.active:
+        audit(db, None, "google_login_denied", email); db.commit()
+        raise HTTPException(403, "This Google account is not linked to a Leaf Standard user - contact admin")
+    p = _upsert_person(db, info)
+    if p.blocked:
+        raise HTTPException(403, "This Google account has been blocked - contact admin")
+    audit(db, u, "google_login", email); db.commit()
+    return {"token": make_token(u.id, p.id), "user": user_out(u, db, p)}
+
+
+@router.post("/identify")
+def identify(body: GoogleIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """After scanning an estate QR: record WHO is using this estate login.
+    Returns a new session token that carries both the login and the person."""
+    info = verify_google_id_token(body.credential)
+    if not info:
+        raise HTTPException(401, "Google sign-in failed")
+    p = _upsert_person(db, info)
+    if p.blocked:
+        audit(db, user, "identify_blocked", p.email); db.commit()
+        raise HTTPException(403, "This Google account has been blocked - contact admin")
+    audit(db, user, "identify", f"{p.email} ({p.name}) on {user.username}")
+    db.commit()
+    return {"token": make_token(user.id, p.id), "user": user_out(user, db, p)}
+
+
+@router.post("/forget-person")
+def forget_person(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """'Not you?' - drop the person from this phone's session, keep the estate login."""
+    return {"token": make_token(user.id), "user": user_out(user, db)}
+
+
 @router.get("/me")
 def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    return user_out(user, db)
+    return user_out(user, db, _person(db, user))
 
 
 @router.get("/config")
 def public_config():
     return {"target": config.TARGET, "warn": config.WARN, "sessions": config.SESSIONS,
-            "today": today().isoformat(), "edit_days": config.EDIT_DAYS}
+            "today": today().isoformat(), "edit_days": config.EDIT_DAYS,
+            "google_client_id": config.GOOGLE_CLIENT_ID}
 
 
 @router.get("/estates")
@@ -151,6 +230,13 @@ def _save(body: ReadingIn, user: User, db: Session) -> Reading:
     if not db.get(Estate, estate_id):
         raise HTTPException(404, "Estate not found")
 
+    # Who is entering: estate logins must have a Google identity attached.
+    person = _person(db, user)
+    if user.role == "estate" and not person:
+        raise HTTPException(428, "Sign in with Google first so we know who is entering this reading")
+    who_name = person.name if person else (user.full_name or user.username)
+    who_email = person.email if person else (user.email or "")
+
     t = today()
     if body.reading_date > t:
         raise HTTPException(422, "Future dates are not allowed")
@@ -166,6 +252,8 @@ def _save(body: ReadingIn, user: User, db: Session) -> Reading:
     else:
         raise HTTPException(422, "Enter leaf standard % or sample weights")
 
+    # One reading per estate/date/session per login - a second person on the
+    # same estate QR updates the same row (unchanged behaviour).
     r = db.scalar(select(Reading).where(Reading.estate_id == estate_id,
                                         Reading.reading_date == body.reading_date,
                                         Reading.session == body.session,
@@ -182,7 +270,14 @@ def _save(body: ReadingIn, user: User, db: Session) -> Reading:
     r.sample_good_g, r.sample_total_g = body.sample_good_g, body.sample_total_g
     r.remarks = body.remarks[:500]
     r.updated_at = now
-    audit(db, user, act, f"estate={estate_id} {body.reading_date} {body.session} {r.leaf_standard}")
+    r.entered_by_name, r.entered_by_email = who_name, who_email
+    db.flush()  # get r.id for the log row
+    db.add(ReadingLog(reading_id=r.id, estate_id=estate_id, reading_date=body.reading_date,
+                      session=body.session, leaf_standard=r.leaf_standard,
+                      action="create" if act == "reading_create" else "update",
+                      entered_by_name=who_name, entered_by_email=who_email,
+                      login_user_id=user.id, at=now))
+    audit(db, user, act, f"estate={estate_id} {body.reading_date} {body.session} {r.leaf_standard} by {who_email or who_name}")
     return r
 
 
@@ -195,6 +290,8 @@ def reading_out(r: Reading, submitted_by_name: str | None = None):
             # Name of the factory/estate that submitted this reading, so a
             # read-only viewer can tell entries from different factories apart.
             "submitted_by_name": submitted_by_name,
+            # The person (Google account) who last saved the value.
+            "entered_by_name": r.entered_by_name, "entered_by_email": r.entered_by_email,
             "submitted_at": r.submitted_at.isoformat() + "Z", "updated_at": r.updated_at.isoformat() + "Z"}
 
 
@@ -413,6 +510,76 @@ def export(d: date | None = Query(default=None, alias="date"), frm: date | None 
                              headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
+# ---------------------------------------------------------------- admin: who entered what
+_SESS_ORDER = {s: i for i, s in enumerate(config.SESSIONS)}
+
+
+@router.get("/admin/entries")
+def admin_entries(frm: date | None = Query(default=None, alias="from"), to: date | None = None,
+                  estate_id: int | None = None, history: bool = False,
+                  _: User = Depends(require("admin")), db: Session = Depends(get_db)):
+    """Current value per slot with who entered it, or (history=true) every
+    save ever made, including values that were later overwritten."""
+    to = to or today()
+    frm = frm or to
+    if frm > to:
+        frm, to = to, frm
+    if (to - frm).days > 366:
+        raise HTTPException(422, "Max range is 1 year")
+    ests = {e.id: e for e in db.scalars(select(Estate)).all()}
+
+    if history:
+        q = select(ReadingLog).where(ReadingLog.reading_date >= frm, ReadingLog.reading_date <= to)
+        if estate_id:
+            q = q.where(ReadingLog.estate_id == estate_id)
+        logs = db.scalars(q.order_by(ReadingLog.at.desc()).limit(5000)).all()
+        names = _names_for(db, {x.login_user_id for x in logs if x.login_user_id})
+        return [{"estate": ests[x.estate_id].name if x.estate_id in ests else x.estate_id,
+                 "estate_id": x.estate_id, "date": x.reading_date.isoformat(), "session": x.session,
+                 "percent": round(x.leaf_standard * 100, 2), "action": x.action,
+                 "entered_by_name": x.entered_by_name, "entered_by_email": x.entered_by_email,
+                 "via": names.get(x.login_user_id), "time": x.at.isoformat() + "Z"} for x in logs]
+
+    q = select(Reading).where(Reading.reading_date >= frm, Reading.reading_date <= to)
+    if estate_id:
+        q = q.where(Reading.estate_id == estate_id)
+    rows = db.scalars(q.limit(5000)).all()
+    names = _names_for(db, {r.submitted_by for r in rows})
+    rows.sort(key=lambda r: (-r.reading_date.toordinal(),
+                             ests[r.estate_id].sort_order if r.estate_id in ests else 0,
+                             _SESS_ORDER.get(r.session, 9)))
+    return [{"id": r.id, "estate": ests[r.estate_id].name if r.estate_id in ests else r.estate_id,
+             "estate_id": r.estate_id, "date": r.reading_date.isoformat(), "session": r.session,
+             "percent": round(r.leaf_standard * 100, 2), "remarks": r.remarks,
+             "entered_by_name": r.entered_by_name, "entered_by_email": r.entered_by_email,
+             "via": names.get(r.submitted_by), "time": r.updated_at.isoformat() + "Z"} for r in rows]
+
+
+@router.get("/admin/people")
+def admin_people(_: User = Depends(require("admin")), db: Session = Depends(get_db)):
+    counts = dict(db.execute(select(ReadingLog.entered_by_email, func.count())
+                             .group_by(ReadingLog.entered_by_email)).all())
+    people = db.scalars(select(Person).order_by(Person.last_seen.desc())).all()
+    return [{"id": p.id, "name": p.name, "email": p.email, "blocked": p.blocked,
+             "first_seen": p.first_seen.isoformat() + "Z", "last_seen": p.last_seen.isoformat() + "Z",
+             "saves": counts.get(p.email, 0)} for p in people]
+
+
+class BlockIn(BaseModel):
+    blocked: bool
+
+
+@router.put("/admin/people/{pid}/block")
+def admin_block(pid: int, body: BlockIn, admin: User = Depends(require("admin")), db: Session = Depends(get_db)):
+    p = db.get(Person, pid)
+    if not p:
+        raise HTTPException(404, "Not found")
+    p.blocked = body.blocked
+    audit(db, admin, "person_block" if body.blocked else "person_unblock", p.email)
+    db.commit()
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------- admin: factory access (managed from admin.html)
 @router.get("/access")
 def get_access(_: User = Depends(require("admin")), db: Session = Depends(get_db)):
@@ -473,6 +640,7 @@ class UserIn(BaseModel):
     role: str
     estate_id: int | None = None
     active: bool = True
+    email: str | None = None
 
 
 @router.get("/users")
@@ -487,6 +655,17 @@ def _check(body: UserIn):
         raise HTTPException(422, "Estate user needs an estate")
     if body.password is not None and len(body.password) < 6:
         raise HTTPException(422, "Password min 6 characters")
+
+
+def _email(body: UserIn, db: Session, uid: int | None = None) -> str | None:
+    e = (body.email or "").strip().lower() or None
+    if e:
+        if "@" not in e:
+            raise HTTPException(422, "Invalid email")
+        other = db.scalar(select(User).where(User.email == e))
+        if other and other.id != uid:
+            raise HTTPException(409, f"{e} is already linked to {other.username}")
+    return e
 
 
 # Estates no longer need a factory to be given a login - factory-less
@@ -505,6 +684,7 @@ def create_user(body: UserIn, admin: User = Depends(require("admin")), db: Sessi
         raise HTTPException(409, "Username exists")
     u = User(username=uname, full_name=body.full_name, role=body.role, active=body.active,
              estate_id=body.estate_id if body.role == "estate" else None,
+             email=_email(body, db),
              password_hash=hash_password(body.password))
     db.add(u); audit(db, admin, "user_create", uname); db.commit()
     return user_out(u, db)
@@ -518,6 +698,7 @@ def update_user(uid: int, body: UserIn, admin: User = Depends(require("admin")),
         raise HTTPException(404, "Not found")
     u.full_name, u.role, u.active = body.full_name, body.role, body.active
     u.estate_id = body.estate_id if body.role == "estate" else None
+    u.email = _email(body, db, u.id)
     if body.password:
         u.password_hash = hash_password(body.password)
     audit(db, admin, "user_update", u.username); db.commit()

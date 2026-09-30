@@ -112,6 +112,12 @@ def main(argv):
             u.qr_token = secrets.token_urlsafe(32)
             s.commit()
             print(f"New QR token set for {argv[1]} - the old QR code is now invalid and must be reprinted.")
+        elif cmd == "set-email":
+            u = s.scalar(select(User).where(User.username == argv[1].lower()))
+            if not u:
+                sys.exit("No such user")
+            u.email = argv[2].strip().lower() if len(argv) > 2 and argv[2] != "-" else None
+            s.commit(); print(f"{u.username} Google email = {u.email}")
         else:
             print(__doc__)
 

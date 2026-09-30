@@ -1,5 +1,5 @@
 /* Offline shell for the estate entry page. API calls always go to the network. */
-const CACHE = 'leaf-standard-v1';
+const CACHE = 'leaf-standard-v3';   
 const SHELL = ['./', 'static/style.css', 'static/common.js', 'manifest.json', 'static/icon.svg'];
 
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())));
@@ -8,6 +8,7 @@ self.addEventListener('activate', e => e.waitUntil(
 ));
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
+  if (url.origin !== location.origin) return;   // Google sign-in script & popups: never cached
   if (e.request.method !== 'GET' || url.pathname.includes('/api/')) return;
   // network first, fall back to cache (so updates arrive when online)
   e.respondWith(

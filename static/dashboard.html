@@ -25,6 +25,11 @@
       <div id="loginMsg"></div>
       <button style="width:100%;margin-top:12px">Login</button>
     </form>
+    <!-- Google Sign-In (shown only when LS_GOOGLE_CLIENT_ID is set and Google's script loads) -->
+    <div id="gBox" class="hidden">
+      <div class="muted" style="text-align:center;margin:14px 0 8px">— or —</div>
+      <div class="gbtn" style="display:flex;justify-content:center"></div>
+    </div>
   </section>
 
   <section id="dash" class="hidden">
@@ -83,7 +88,15 @@ async function boot() {
   } catch (e) { showLogin(); }
 }
 
-function showLogin() { $('loginCard').classList.remove('hidden'); $('btnOut').classList.add('hidden'); }
+function showLogin() {
+  $('loginCard').classList.remove('hidden'); $('btnOut').classList.add('hidden');
+  // Google Sign-In: only reached when there is no valid saved session.
+  LS.googleButton($('gBox'), cfg && cfg.google_client_id, u => {
+    if (!['ceo', 'admin'].includes(u.role)) { location.href = './'; return; }
+    $('loginMsg').innerHTML = '';
+    $('loginCard').classList.add('hidden'); $('btnOut').classList.remove('hidden'); start(u);
+  }, e => { $('loginMsg').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`; });
+}
 
 $('loginForm').onsubmit = async ev => {
   ev.preventDefault();

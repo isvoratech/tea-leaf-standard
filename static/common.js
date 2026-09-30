@@ -29,7 +29,9 @@ const LS = (() => {
       submitted: 'Submitted', pending: 'Pending', queued: 'Queued (offline)', pct: 'Leaf standard %', weights: 'Sample weights',
       good: 'Good leaf (g)', total: 'Total sample (g)', remarks: 'Remarks', logout: 'Logout', last7: 'Last 7 days',
       offline: 'No signal – saved on phone, will send automatically.', saved: 'Saved', synced: 'Offline entries sent',
-      estate: 'Estate', dayavg: 'Day avg', locked: 'Locked', dashboard: 'CEO dashboard', admin: 'Users' },
+      estate: 'Estate', dayavg: 'Day avg', locked: 'Locked', dashboard: 'CEO dashboard', admin: 'Users',
+      whoTitle: 'Who is entering data?', whoSub: 'Sign in with Google once on this phone. Your name is saved with every reading you enter.',
+      notYou: 'Not you?', by: 'by' },
     si: { title: 'දළු ප්‍රමිතිය', sub: 'ක්ෂේත්‍ර දිනපොත · දිනකට වාර 3', login: 'පිවිසෙන්න', username: 'පරිශීලක නාමය', password: 'මුරපදය',
       date: 'දිනය', morning: 'උදෑසන', noon: 'දහවල්', evening: 'සවස', save: 'සුරකින්න', update: 'යාවත්කාලීන කරන්න',
       submitted: 'යොමු කළා', pending: 'ඉතිරිය', queued: 'පෝලිමේ (නොබැඳි)', pct: 'දළු ප්‍රමිතිය %', weights: 'සාම්පල බර',
@@ -101,7 +103,55 @@ const LS = (() => {
     el.innerHTML = s + `<div class="legend"><span style="--c:${col.ALL}">Company</span><span style="--c:${col.HG}">High Grown</span><span style="--c:${col.LG}">Low Grown</span><span style="--c:var(--bad)">Target ${pct(target)} (dashed)</span></div>`;
   }
 
-  function logout() { store.set('token', null); store.set('user', null); location.href = base; }
+  /* Google Sign-In button.
+     box      - element containing a .gbtn child; un-hidden once Google's script loads
+     endpoint - 'google-login' (login page: linked CEO/admin accounts)
+                'identify'     (after estate QR login: record who is entering data)
+     Google's script is initialised once per page; the latest button's handler wins. */
+  let gHandler = null, gReady = null;
+  function loadGis(clientId) {
+    if (gReady) return gReady;
+    gReady = new Promise((resolve, reject) => {
+      const go = () => {
+        google.accounts.id.initialize({
+          client_id: clientId,
+          auto_select: true,              // returning users signed in without a click
+          cancel_on_tap_outside: false,
+          use_fedcm_for_prompt: true,
+          callback: resp => gHandler && gHandler(resp),
+        });
+        resolve();
+      };
+      if (window.google?.accounts?.id) return go();
+      const s = document.createElement('script');
+      s.src = 'https://accounts.google.com/gsi/client'; s.async = true; s.defer = true;
+      s.onload = go; s.onerror = () => { gReady = null; reject(new Error('Google sign-in could not load - check your connection')); };
+      document.head.appendChild(s);
+    });
+    return gReady;
+  }
 
-  return { api, store, base, t, setLang, get lang() { return lang; }, pct, iso, addDays, nice, esc, band, renderTable, renderTrend, logout };
+  function googleButton(box, clientId, onDone, onErr, endpoint = 'google-login') {
+    if (!box || !clientId) return;
+    gHandler = async resp => {
+      try {
+        const r = await api(endpoint, { method: 'POST', body: JSON.stringify({ credential: resp.credential }), noRedirect: true });
+        store.set('token', r.token); store.set('user', JSON.stringify(r.user));
+        onDone(r.user);
+      } catch (e) { onErr && onErr(e); }
+    };
+    loadGis(clientId).then(() => {
+      const slot = box.querySelector('.gbtn');
+      slot.innerHTML = '';
+      google.accounts.id.renderButton(slot, { theme: 'outline', size: 'large', text: 'signin_with', width: 300 });
+      box.classList.remove('hidden');
+      google.accounts.id.prompt();
+    }).catch(e => onErr && onErr(e));   // offline: password login still works
+  }
+
+  function googleForget() { try { window.google?.accounts?.id?.disableAutoSelect(); } catch (e) {} }
+
+  function logout() { googleForget(); store.set('token', null); store.set('user', null); location.href = base; }
+
+  return { api, store, base, t, setLang, get lang() { return lang; }, pct, iso, addDays, nice, esc, band, renderTable, renderTrend, logout, googleButton, googleForget };
 })();

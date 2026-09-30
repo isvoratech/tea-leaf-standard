@@ -32,6 +32,9 @@ class User(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(60), unique=True)
     full_name: Mapped[str] = mapped_column(String(120), default="")
+    # Google account linked to this login (lower-case), used by the
+    # "Sign in with Google" button on the login page (CEO / admin).
+    email: Mapped[str | None] = mapped_column(String(120), unique=True, nullable=True)
     password_hash: Mapped[str] = mapped_column(String(200))
     role: Mapped[str] = mapped_column(String(10))
     estate_id: Mapped[int | None] = mapped_column(ForeignKey("ls_estates.id"), nullable=True)
@@ -40,6 +43,23 @@ class User(Base):
     # A long random secret embedded in this user's personal QR code
     # Anyone who scans it is logged in as this user
     qr_token: Mapped[str] = mapped_column(String(64), unique=True, default=lambda: secrets.token_urlsafe(32))
+
+
+class Person(Base):
+    """A real person identified by their Google account.
+
+    Filled in automatically the first time someone signs in with Google on
+    a phone after scanning an estate QR code - no registration or approval.
+    The admin can block a person from the Admin > People tab.
+    """
+    __tablename__ = "ls_people"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(120), unique=True)
+    name: Mapped[str] = mapped_column(String(120), default="")
+    google_sub: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    blocked: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Reading(Base):
@@ -59,6 +79,29 @@ class Reading(Base):
     submitted_by: Mapped[int] = mapped_column(ForeignKey("ls_users.id"))
     submitted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # The person (Google account) who last saved this value.
+    entered_by_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    entered_by_email: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
+class ReadingLog(Base):
+    """Every save (create or update) of a reading, with who did it.
+
+    Readings stay one-per-slot (updates overwrite); this table keeps every
+    value that was ever saved so the admin can see who changed what.
+    """
+    __tablename__ = "ls_reading_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    reading_id: Mapped[int] = mapped_column(Integer, index=True)
+    estate_id: Mapped[int] = mapped_column(ForeignKey("ls_estates.id"), index=True)
+    reading_date: Mapped[date] = mapped_column(Date, index=True)
+    session: Mapped[str] = mapped_column(String(10))
+    leaf_standard: Mapped[float] = mapped_column(Float)
+    action: Mapped[str] = mapped_column(String(10))  # create / update
+    entered_by_name: Mapped[str] = mapped_column(String(120), default="")
+    entered_by_email: Mapped[str] = mapped_column(String(120), default="")
+    login_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
 class Audit(Base):
@@ -83,12 +126,23 @@ class FactorySupply(Base):
     supplied_estate_id: Mapped[int] = mapped_column(ForeignKey("ls_estates.id"), index=True)
 
 
-def _migrate() -> None:
-    """Upgrade an existing database in place (no need to delete it)."""
-    cols = {c["name"] for c in inspect(engine).get_columns("ls_estates")}
-    if "has_factory" not in cols:
+def _add_column(table: str, name: str, ddl: str, index_sql: str | None = None) -> None:
+    cols = {c["name"] for c in inspect(engine).get_columns(table)}
+    if name not in cols:
         with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE ls_estates ADD COLUMN has_factory BOOLEAN NOT NULL DEFAULT FALSE"))
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+            if index_sql:
+                conn.execute(text(index_sql))
+
+
+def _migrate() -> None:
+    """Upgrade an existing database in place (no need to delete it).
+    New tables (ls_people, ls_reading_log) are created by create_all."""
+    _add_column("ls_estates", "has_factory", "BOOLEAN NOT NULL DEFAULT FALSE")
+    _add_column("ls_users", "email", "VARCHAR(120)",
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_ls_users_email ON ls_users (email)")
+    _add_column("ls_readings", "entered_by_name", "VARCHAR(120)")
+    _add_column("ls_readings", "entered_by_email", "VARCHAR(120)")
 
 
 def _seed_factories(s) -> None:
