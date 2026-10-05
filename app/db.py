@@ -113,6 +113,14 @@ class Audit(Base):
     at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class DashboardSetting(Base):
+    """Small persistent settings controlled from the admin dashboard."""
+    __tablename__ = "ls_dashboard_settings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    value: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 class FactorySupply(Base):
     """Which estates a factory may enter readings for (besides its own).
 
@@ -137,7 +145,7 @@ def _add_column(table: str, name: str, ddl: str, index_sql: str | None = None) -
 
 def _migrate() -> None:
     """Upgrade an existing database in place (no need to delete it).
-    New tables (ls_people, ls_reading_log) are created by create_all."""
+    New tables (ls_people, ls_reading_log, ls_dashboard_settings) are created by create_all."""
     _add_column("ls_estates", "has_factory", "BOOLEAN NOT NULL DEFAULT FALSE")
     _add_column("ls_users", "email", "VARCHAR(120)",
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_ls_users_email ON ls_users (email)")

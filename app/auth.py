@@ -103,6 +103,10 @@ def dashboard_access(authorization: str = Header(default=""), key: str = Query(d
     k = key or x_embed_key
     if config.EMBED_KEY and k and hmac.compare_digest(k, config.EMBED_KEY):
         return None
+    token = authorization.removeprefix("Bearer ").strip()
+    data = _decode(token) if token else None
+    if data and data.get("role") == "ceo":
+        return {"role": "ceo"}
     user = current_user(authorization, db)
     if user.role not in ("ceo", "admin"):
         raise HTTPException(403, "Dashboard is for CEO / admin")

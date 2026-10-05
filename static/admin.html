@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Leaf Standard · Users</title>
+<title>Leaf Standard · Admin</title>
 <link rel="stylesheet" href="static/style.css">
 <style>
   .chk { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-weight: normal; }
@@ -19,26 +19,40 @@
   .ent small { display: block; color: var(--muted); font-size: 12px; }
   .pill.upd { background: var(--warn-bg); color: var(--warn); }
   .pill.new { background: var(--good-bg); color: var(--good); }
+  .delete-entry { color: var(--bad); background: var(--bad-bg); border-color: var(--bad); padding: 6px 12px; }
+  .entry-action { position: sticky; right: 0; background: var(--card); }
+  .dashboard-setting-card h2 { margin: 0 0 4px; }
+  .dashboard-setting-card p { margin: 0; max-width: 720px; }
+  .setting-line { display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap; }
+  .setting-toggle { display: inline-flex; align-items: center; gap: 8px; color: var(--ink); white-space: nowrap; margin: 0; font-weight: 650; }
+  .setting-toggle input { width: 20px; height: 20px; accent-color: var(--brand); }
   .pill.blk { background: var(--bad-bg); color: var(--bad); }
 </style>
 </head>
 <body>
 <header class="top">
-  <h1>Leaf Standard — Admin<small>Users · Entries · People</small></h1>
-  <a class="btn ghost" href="./" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Entry</a>
-  <a class="btn ghost" href="dashboard" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Dashboard</a>
-  <a class="btn ghost" href="qrcodes" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">QR Codes</a>
+  <h1 id="pageTitle">Leaf Standard — Admin<small id="pageSub">Users · Entries · People</small></h1>
+  <a id="navEntry" class="btn ghost" href="./" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Entry</a>
+  <a id="navDashboard" class="btn ghost" href="dashboard" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Dashboard</a>
+  <a id="navQr" class="btn ghost" href="qrcodes" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">QR Codes</a>
   <button id="btnOut" class="ghost">Logout</button>
 </header>
 <main class="wrap">
   <div id="gate"></div>
   <section id="body" class="hidden">
-    <div class="tabs">
+    <div class="tabs" id="tabs">
       <button type="button" data-tab="users" class="on">Users</button>
       <button type="button" data-tab="entries">Entries</button>
       <button type="button" data-tab="people">People</button>
     </div>
     <div id="tab-users">
+    <div class="card dashboard-setting-card">
+      <div class="setting-line">
+        <div><h2>CEO dashboard remarks</h2><p class="muted">Control whether remark bubbles appear in the CEO dashboard. Saved remarks remain available in Admin &gt; Entries.</p></div>
+        <label class="setting-toggle"><input type="checkbox" id="showRemarksCeo"><span>Show remarks</span></label>
+      </div>
+      <div id="remarksSettingMsg" role="status" aria-live="polite"></div>
+    </div>
     <div class="card">
       <h2 id="fTitle">Add user</h2>
       <form id="f">
@@ -86,11 +100,11 @@
           <button type="button" class="ghost" id="eCsv">⬇ CSV</button>
         </div>
         <p class="muted" style="font-size:13px;margin:8px 0 0">Default view: the current value of each reading and who saved it last.
-          Tick “Show every change” to see every save, including values later overwritten by someone else.</p>
+          Tick “Show every change” to see every save, including values later overwritten by someone else. Change history is read-only.</p>
       </div>
       <div class="card">
         <h2 id="eTitle">Entries</h2>
-        <div id="eMsg"></div>
+        <div id="eMsg" role="status" aria-live="polite"></div>
         <div class="tablewrap"><table class="ls ent" id="eTb"></table></div>
       </div>
     </div>
@@ -110,7 +124,8 @@
 <script src="static/common.js"></script>
 <script>
 const $ = id => document.getElementById(id);
-let estates = [], users = [], access = { estates: [], supply: {} };
+let estates = [], users = [], access = { estates: [], supply: {} }, entriesEmbedKey = '';
+let savingRemarksSetting = false;
 $('btnOut').onclick = LS.logout;
 
 $('rl').onchange = () => {
@@ -122,6 +137,27 @@ $('rl').onchange = () => {
 $('hf').onchange = () => $('supplyBox').classList.toggle('hidden', $('rl').value !== 'estate' || !$('hf').checked);
 $('es').onchange = () => syncFactoryFields(+$('es').value);
 $('clr').onclick = clear;
+async function loadRemarksSetting() {
+  try {
+    const value = await LS.api('admin/settings/remarks');
+    $('showRemarksCeo').checked = value.show !== false;
+    updateRemarksSettingLabel();
+  } catch (e) { $('remarksSettingMsg').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`; }
+}
+function updateRemarksSettingLabel() {
+  $('remarksSettingMsg').innerHTML = `<span class="muted">Remarks are currently <b>${$('showRemarksCeo').checked ? 'visible' : 'hidden'}</b> on the CEO dashboard.</span>`;
+}
+$('showRemarksCeo').onchange = async () => {
+  if (savingRemarksSetting) return;
+  const checkbox = $('showRemarksCeo'); const desired = checkbox.checked; savingRemarksSetting = true; checkbox.disabled = true;
+  $('remarksSettingMsg').innerHTML = '<span class="muted">Saving…</span>';
+  try {
+    const value = await LS.api('admin/settings/remarks', { method: 'PUT', body: JSON.stringify({ show: desired }) });
+    checkbox.checked = value.show !== false; updateRemarksSettingLabel();
+  } catch (e) {
+    checkbox.checked = !desired; $('remarksSettingMsg').innerHTML = `<div class="msg err">Could not save: ${LS.esc(e.message)}</div>`;
+  } finally { savingRemarksSetting = false; checkbox.disabled = false; }
+};
 
 function syncFactoryFields(eid) {
   const e = estates.find(x => x.id === eid);
@@ -215,13 +251,14 @@ function showTab(name) {
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
   ['users', 'entries', 'people'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== name));
   history.replaceState(null, '', name === 'users' ? location.pathname : '#' + name);
-  if (name === 'entries' && !entriesLoaded) loadEntries();
+  if (name === 'entries' && !entriesLoaded) loadEntries().catch(() => {});
   if (name === 'people') loadPeople();
 }
 document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
 // ---------------------------------------------------------------- entries
-let entriesLoaded = false, entryRows = [];
+let entriesLoaded = false, entryRows = [], entriesFilterEmail = null, entriesRequest = 0, deletingEntry = false;
+let canDeleteEntries = false;
 const SESS = { morning: 'Morning', noon: 'Noon', evening: 'Evening' };
 const when = s => new Date(s).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 const who = r => r.entered_by_name
@@ -230,26 +267,66 @@ const who = r => r.entered_by_name
 
 async function loadEntries(onlyEmail) {
   entriesLoaded = true;
+  const filterEmail = typeof onlyEmail === 'string' ? onlyEmail : null;
   const hist = $('eHist').checked;
+  const request = ++entriesRequest;
+  entriesFilterEmail = filterEmail;
   const q = `from=${$('eFrom').value}&to=${$('eTo').value}${$('eEst').value ? '&estate_id=' + $('eEst').value : ''}${hist ? '&history=true' : ''}`;
   $('eMsg').innerHTML = ''; $('eTb').innerHTML = '<tbody><tr><td class="muted">Loading…</td></tr></tbody>';
   try {
-    entryRows = await LS.api('admin/entries?' + q);
-    if (typeof onlyEmail === 'string') entryRows = entryRows.filter(r => r.entered_by_email === onlyEmail);
-    $('eTitle').textContent = `${hist ? 'Change history' : 'Entries'}${typeof onlyEmail === 'string' ? ' by ' + onlyEmail : ''} (${entryRows.length})`;
-    if (!entryRows.length) { $('eTb').innerHTML = '<tbody><tr><td class="muted">No entries in this period.</td></tr></tbody>'; return; }
-    $('eTb').innerHTML = `<thead><tr><th>Estate</th><th>Date</th><th>Session</th><th class="num">Value</th>${hist ? '<th>Action</th>' : ''}<th>Entered by</th><th>Time</th></tr></thead><tbody>` +
+    const rows = await LS.api('admin/entries?' + q, {
+      headers: entriesEmbedKey ? { 'X-Embed-Key': entriesEmbedKey } : {},
+    });
+    if (request !== entriesRequest) return;
+    entryRows = filterEmail ? rows.filter(r => r.entered_by_email === filterEmail) : rows;
+    $('eTitle').textContent = `${hist ? 'Change history' : 'Entries'}${filterEmail ? ' by ' + filterEmail : ''} (${entryRows.length})`;
+    if (!entryRows.length) {
+      $('eTb').innerHTML = '<tbody><tr><td class="muted">No entries in this period.</td></tr></tbody>';
+      return;
+    }
+    const actionHead = canDeleteEntries && !hist ? '<th class="entry-action">Actions</th>' : '';
+    $('eTb').innerHTML = `<thead><tr><th>Estate</th><th>Date</th><th>Session</th><th class="num">Value</th>${hist ? '<th>Action</th>' : ''}<th>Entered by</th><th>Time</th>${actionHead}</tr></thead><tbody>` +
       entryRows.map(r => {
         const via = r.via && r.via !== r.estate ? `<small>via ${LS.esc(r.via)}</small>` : '';
         const act = hist ? `<td><span class="pill ${r.action === 'create' ? 'new' : 'upd'}">${r.action === 'create' ? 'New' : 'Updated'}</span></td>` : '';
         const rem = !hist && r.remarks ? ` title="${LS.esc(r.remarks)}"` : '';
+        const action = canDeleteEntries && !hist ? `<td class="entry-action"><button type="button" class="delete-entry" data-delete="${r.id}" aria-label="Delete ${LS.esc(r.estate)} ${r.date} ${SESS[r.session]}" ${deletingEntry ? 'disabled' : ''}>Delete</button></td>` : '';
         return `<tr><td>${LS.esc(r.estate)}${via}</td><td>${r.date}</td><td>${SESS[r.session] || r.session}</td>
-          <td class="num"${rem}>${r.percent.toFixed(1)}%${rem ? ' 💬' : ''}</td>${act}<td>${who(r)}</td><td>${when(r.time)}</td></tr>`;
+          <td class="num"${rem}>${r.percent.toFixed(1)}%${rem ? ' 💬' : ''}</td>${act}<td>${who(r)}</td><td>${when(r.time)}</td>${action}</tr>`;
       }).join('') + '</tbody>';
-  } catch (e) { $('eTb').innerHTML = ''; $('eMsg').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`; }
+    $('eTb').querySelectorAll('[data-delete]').forEach(button => {
+      button.onclick = () => deleteEntry(Number(button.dataset.delete));
+    });
+  } catch (e) {
+    if (request !== entriesRequest) return;
+    entryRows = []; entriesLoaded = false;
+    $('eTb').innerHTML = ''; $('eMsg').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`;
+    throw e;
+  }
 }
-$('eLoad').onclick = loadEntries;
-$('eHist').onchange = loadEntries;
+$('eLoad').onclick = () => loadEntries().catch(() => {});
+$('eHist').onchange = () => loadEntries().catch(() => {});
+async function deleteEntry(id) {
+  if (!canDeleteEntries || deletingEntry || $('eHist').checked) return;
+  const row = entryRows.find(r => r.id === id);
+  if (!row) return;
+  const details = `${row.estate} · ${row.date} · ${SESS[row.session]} · ${row.percent.toFixed(1)}%`;
+  if (!confirm(`Delete this entry?\n\n${details}${row.via ? '\nEntered via: ' + row.via : ''}\n\nThis also permanently removes its change history. This cannot be undone.`)) return;
+  deletingEntry = true;
+  $('eTb').querySelectorAll('[data-delete]').forEach(b => b.disabled = true);
+  let removed = false;
+  try {
+    await LS.api(`admin/entries/${id}`, { method: 'DELETE' });
+    removed = true;
+    await loadEntries(entriesFilterEmail);
+    $('eMsg').innerHTML = `<div class="msg ok">Deleted: ${LS.esc(details)}</div>`;
+  } catch (e) {
+    $('eMsg').innerHTML = `<div class="msg err">${removed ? 'Entry deleted, but the list could not refresh. Click Show to reload. ' : 'Could not delete entry. '}${LS.esc(e.message)}</div>`;
+  } finally {
+    deletingEntry = false;
+    $('eTb').querySelectorAll('[data-delete]').forEach(b => b.disabled = false);
+  }
+}
 
 $('eCsv').onclick = () => {
   if (!entryRows.length) return;
@@ -285,26 +362,48 @@ async function loadPeople() {
     // Jump to the change history filtered down to this person
     $('pTb').querySelectorAll('button[data-pmail]').forEach(b => b.onclick = () => {
       $('eHist').checked = true; $('eEst').value = '';
-      entriesLoaded = true; showTab('entries'); loadEntries(b.dataset.pmail);
+      entriesLoaded = true; showTab('entries'); loadEntries(b.dataset.pmail).catch(() => {});
     });
   } catch (e) { $('pMsg').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`; }
 }
 
 (async () => {
   try {
-    const me = await LS.api('me');
-    if (me.role !== 'admin') throw new Error('Admin only');
-    access = await LS.api('access'); estates = access.estates.filter(e => e.active);
-    $('es').innerHTML = estates.map(e => `<option value="${e.id}">${LS.esc(e.name)}</option>`).join('');
+    const params = new URLSearchParams(location.search);
+    entriesEmbedKey = params.get('key') || '';
+    if (entriesEmbedKey) history.replaceState(null, '', location.pathname + location.hash);
+    const me = entriesEmbedKey ? null : await LS.api('me');
+    const isAdmin = me?.role === 'admin';
+    canDeleteEntries = isAdmin;
+    const isCeo = me?.role === 'ceo';
+    if (!entriesEmbedKey && !isAdmin && !isCeo) throw new Error('Admin or CEO only');
+    if (isAdmin) {
+      access = await LS.api('access');
+      estates = access.estates.filter(e => e.active);
+      $('es').innerHTML = estates.map(e => `<option value="${e.id}">${LS.esc(e.name)}</option>`).join('');
+    } else {
+      estates = await LS.api('estates');
+      $('pageTitle').childNodes[0].textContent = 'Leaf Standard — Entries';
+      $('pageSub').textContent = 'Read-only';
+      $('navEntry').classList.add('hidden'); $('navQr').classList.add('hidden'); $('btnOut').classList.add('hidden');
+      if (entriesEmbedKey) $('navDashboard').href = `dashboard?key=${encodeURIComponent(entriesEmbedKey)}`;
+      $('tabs').classList.add('hidden');
+      $('tab-users').classList.add('hidden'); $('tab-people').classList.add('hidden');
+    }
     // Entries filters: default to the last 7 days, all estates
     const cfg = await LS.api('config');
     $('eTo').value = cfg.today; $('eTo').max = cfg.today; $('eFrom').value = LS.addDays(cfg.today, -6);
     $('eEst').innerHTML = '<option value="">All estates</option>' + estates.map(e => `<option value="${e.id}">${LS.esc(e.name)}</option>`).join('');
     $('body').classList.remove('hidden');
-    if (estates.length) syncFactoryFields(estates[0].id); else $('rl').onchange();
-    load();
-    const h = location.hash.slice(1);
-    if (h === 'entries' || h === 'people') showTab(h);
+    if (isAdmin) {
+      if (estates.length) syncFactoryFields(estates[0].id); else $('rl').onchange();
+      load();
+      loadRemarksSetting();
+      const h = location.hash.slice(1);
+      if (h === 'entries' || h === 'people') showTab(h);
+    } else {
+      showTab('entries');
+    }
   } catch (e) { $('gate').innerHTML = `<div class="msg err">${LS.esc(e.message)} – <a href="./">login</a></div>`; }
 })();
 </script>

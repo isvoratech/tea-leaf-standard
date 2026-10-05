@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#2e6b3a">
-<title>Leaf Standard · Field Diary</title>
+<title>Daily Leaf Standard · Field Diary</title>
 <link rel="manifest" href="manifest.json">
 <link rel="stylesheet" href="static/style.css">
 <!-- Styling for the per-factory breakdown shown on read-only (and
@@ -18,12 +18,15 @@
 </style>
 </head>
 <body>
-<header class="top">
-  <h1><span data-t="title">Leaf Standard</span><small id="who" data-t="sub">Field Diary · daily 3-round entry</small></h1>
-  <div class="lang"><button data-l="en">EN</button><button data-l="si">සිං</button><button data-l="ta">தமி</button></div>
-  <a id="lnkDash" class="btn ghost hidden" href="dashboard" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px" data-t="dashboard">CEO dashboard</a>
-  <a id="lnkAdmin" class="btn ghost hidden" href="admin" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px" data-t="admin">Users</a>
-  <button id="btnOut" class="ghost hidden" data-t="logout">Logout</button>
+<header class="top field-header">
+  <img class="field-logo" src="static/logo.jpg" width="112" alt="Talawakelle Tea Estates PLC">
+  <h1><span data-t="title">Daily Leaf Standard</span><small id="who" data-t="sub">Field Diary · daily 3-round entry</small></h1>
+  <div class="top-actions">
+    <div class="lang"><button data-l="en">EN</button><button data-l="si">සිං</button><button data-l="ta">தமி</button></div>
+    <a id="lnkDash" class="btn ghost hidden" href="dashboard" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px" data-t="dashboard">CEO dashboard</a>
+    <a id="lnkAdmin" class="btn ghost hidden" href="admin" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px" data-t="admin">Users</a>
+    <button id="btnOut" class="ghost hidden" data-t="logout">Logout</button>
+  </div>
 </header>
 
 <main class="wrap narrow">
@@ -396,5 +399,6 @@ function renderHistory(rows) {
 
 boot();
 </script>
+
 </body>
 </html>

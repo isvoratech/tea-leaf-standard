@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from . import config
 from .auth import (current_user, dashboard_access, hash_password, make_token, require,
                    verify_google_id_token, verify_password)
-from .db import Audit, Estate, FactorySupply, Person, Reading, ReadingLog, User, get_db
+from .db import Audit, DashboardSetting, Estate, FactorySupply, Person, Reading, ReadingLog, User, get_db
 
 router = APIRouter(prefix="/api")
 
@@ -176,6 +176,34 @@ def public_config():
     return {"target": config.TARGET, "warn": config.WARN, "sessions": config.SESSIONS,
             "today": today().isoformat(), "edit_days": config.EDIT_DAYS,
             "google_client_id": config.GOOGLE_CLIENT_ID}
+
+
+def _dashboard_remarks_visible(db: Session) -> bool:
+    setting = db.scalar(select(DashboardSetting).where(DashboardSetting.key == "show_remarks"))
+    return True if setting is None else bool(setting.value)
+
+
+class RemarkVisibilityIn(BaseModel):
+    show: bool
+
+
+@router.get("/admin/settings/remarks")
+def admin_remarks_setting(_: User = Depends(require("admin")), db: Session = Depends(get_db)):
+    return {"show": _dashboard_remarks_visible(db)}
+
+
+@router.put("/admin/settings/remarks")
+def update_admin_remarks_setting(body: RemarkVisibilityIn, admin: User = Depends(require("admin")),
+                                db: Session = Depends(get_db)):
+    setting = db.scalar(select(DashboardSetting).where(DashboardSetting.key == "show_remarks"))
+    if setting is None:
+        setting = DashboardSetting(key="show_remarks", value=body.show)
+        db.add(setting)
+    else:
+        setting.value = body.show
+    audit(db, admin, "dashboard_remarks_visibility", f"show={body.show}")
+    db.commit()
+    return {"show": bool(setting.value)}
 
 
 @router.get("/estates")
@@ -351,6 +379,62 @@ def my_readings(d: date | None = Query(default=None, alias="date"), days: int = 
     return [reading_out(r, names.get(r.submitted_by)) for r in rows]
 
 
+class RemarkIn(BaseModel):
+    remarks: str = Field(default="", max_length=500)
+
+
+@router.put("/readings/{rid}/remark")
+def update_reading_remark(
+    rid: int,
+    body: RemarkIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Update only the optional remark.
+
+    This does NOT change the leaf-standard value and does NOT create
+    another ReadingLog value-history record.
+    """
+    r = db.get(Reading, rid)
+
+    if not r:
+        raise HTTPException(404, "Reading not found")
+
+    if user.role not in ("admin", "estate"):
+        raise HTTPException(403, "Not allowed")
+
+    if user.role == "estate":
+        if r.submitted_by != user.id:
+            raise HTTPException(403, "You can only edit remarks on your own reading")
+
+        if not _person(db, user):
+            raise HTTPException(
+                428,
+                "Sign in with Google first so we know who is editing this remark"
+            )
+
+        if (today() - r.reading_date).days > config.EDIT_DAYS:
+            raise HTTPException(
+                403,
+                f"Entries older than {config.EDIT_DAYS} day(s) are locked - contact admin"
+            )
+
+    r.remarks = body.remarks.strip()[:500]
+
+    audit(
+        db,
+        user,
+        "reading_remark_update",
+        f"reading={r.id} estate={r.estate_id} "
+        f"{r.reading_date} {r.session}"
+    )
+
+    db.commit()
+
+    name = _names_for(db, {r.submitted_by}).get(r.submitted_by)
+    return reading_out(r, name)
+
+
 @router.delete("/readings/{rid}")
 def delete_reading(rid: int, user: User = Depends(require("admin")), db: Session = Depends(get_db)):
     r = db.get(Reading, rid)
@@ -377,7 +461,7 @@ def _avg(vals):
     return round(sum(vals) / len(vals), 4) if vals else None
 
 
-def build_summary(db: Session, start: date, end: date):
+def build_summary(db: Session, start: date, end: date, include_remarks: bool = True):
     if end < start:
         start, end = end, start
     ests = db.scalars(select(Estate).where(Estate.active).order_by(Estate.sort_order)).all()
@@ -388,27 +472,52 @@ def build_summary(db: Session, start: date, end: date):
     days_seen: dict[int, set] = {}
     last: dict[int, datetime] = {}
     remarks: dict[int, list] = {}
+    session_remarks: dict[int, dict[str, list]] = {}
+    # (estate, session) -> {login id: [values]}  - per-factory split
+    fac_bucket: dict[tuple, dict[int, list]] = {}
     for r in reads:
         bucket.setdefault((r.estate_id, r.session), []).append(r.leaf_standard)
+        fac_bucket.setdefault((r.estate_id, r.session), {}).setdefault(r.submitted_by, []).append(r.leaf_standard)
         # A "slot" is one date + session. Several factories can fill the same
         # slot for an estate; it still only counts once towards completeness.
         slots.setdefault(r.estate_id, set()).add((r.reading_date, r.session))
         days_seen.setdefault(r.estate_id, set()).add(r.reading_date)
         if r.estate_id not in last or r.updated_at > last[r.estate_id]:
             last[r.estate_id] = r.updated_at
-        if r.remarks:
+        if include_remarks and r.remarks:
             remarks.setdefault(r.estate_id, []).append(f"{r.reading_date:%d %b} {r.session}: {r.remarks}")
+            session_remarks.setdefault(r.estate_id, {}).setdefault(r.session, []).append(
+                (r.reading_date, f"{r.reading_date:%d %b}: {r.remarks}")
+            )
+
+    fac_names = _names_for(db, {r.submitted_by for r in reads})
 
     ndays = (end - start).days + 1
     rows, groups = [], {"HG": [], "LG": []}
     for e in ests:
         vals = {s: _avg(bucket.get((e.id, s), [])) for s in config.SESSIONS}
         count = len(slots.get(e.id, ()))
+        remarks_by_session = {
+            session: [text for _, text in sorted(session_remarks.get(e.id, {}).get(session, []))][-5:]
+            for session in config.SESSIONS
+        } if include_remarks else {session: [] for session in config.SESSIONS}
+
+        # Factory-wise values - only for sessions entered by 2+ factories
+        by_factory = {}
+        for s in config.SESSIONS:
+            per = fac_bucket.get((e.id, s), {})
+            if len(per) > 1:
+                by_factory[s] = sorted(
+                    ({"name": fac_names.get(uid, f"User {uid}"), "value": _avg(v)} for uid, v in per.items()),
+                    key=lambda x: x["name"])
+
         row = {"type": "estate", "estate_id": e.id, "name": e.name, "region": e.region, **vals,
                "day_avg": _avg(list(vals.values())), "submitted": count, "expected": 3 * ndays,
                "days_reported": len(days_seen.get(e.id, ())),
                "last_update": last[e.id].isoformat() + "Z" if e.id in last else None,
-               "remarks": remarks.get(e.id, [])[-5:]}
+               "remarks": remarks.get(e.id, [])[-5:] if include_remarks else [],
+               "remarks_by_session": remarks_by_session,
+               "by_factory": by_factory}
         groups.setdefault(e.region, []).append(row)
 
     def avg_row(label, key, members):
@@ -443,25 +552,166 @@ def summary(d: date | None = Query(default=None, alias="date"), frm: date | None
     s, e = _range(d, frm, to)
     if (e - s).days > 366:
         raise HTTPException(422, "Max range is 1 year")
-    return build_summary(db, s, e)
+    show_remarks = _dashboard_remarks_visible(db)
+    data = build_summary(db, s, e, include_remarks=show_remarks)
+    data["remarks_visible"] = show_remarks
+    return data
 
 
 @router.get("/trend")
-def trend(days: int = 14, end: date | None = None, _=Depends(dashboard_access), db: Session = Depends(get_db)):
-    end = end or today()
-    days = max(2, min(days, 90))
-    start = end - timedelta(days=days - 1)
-    reads = db.scalars(select(Reading).where(Reading.reading_date >= start, Reading.reading_date <= end)).all()
-    regions = {e.id: e.region for e in db.scalars(select(Estate)).all()}
-    b: dict = {}
+def trend(days: int = 14, end: date | None = None,
+          frm: date | None = Query(default=None, alias="from"),
+          to: date | None = None,
+          estate_id: int | None = None,
+          _=Depends(dashboard_access), db: Session = Depends(get_db)):
+
+    if (frm is None) != (to is None):
+        raise HTTPException(422, "Provide both from and to dates")
+
+    if frm is not None:
+        if to < frm or (to - frm).days > 366:
+            raise HTTPException(
+                422,
+                "Choose an ordered range of at most 367 days"
+            )
+
+        start, end = frm, to
+        days = (end - start).days + 1
+
+    else:
+        end = end or today()
+        days = max(2, min(days, 90))
+        start = end - timedelta(days=days - 1)
+
+    estates = db.scalars(
+        select(Estate)
+        .where(Estate.active)
+        .order_by(Estate.sort_order)
+    ).all()
+
+    selected_estate = None
+
+    if estate_id is not None:
+        selected_estate = next(
+            (e for e in estates if e.id == estate_id),
+            None
+        )
+
+        if selected_estate is None:
+            raise HTTPException(
+                404,
+                "Estate not found or inactive"
+            )
+
+    reads = db.scalars(
+        select(Reading).where(
+            Reading.reading_date >= start,
+            Reading.reading_date <= end
+        )
+    ).all()
+
+    bucket: dict = {}
+
     for r in reads:
-        b.setdefault((r.reading_date, regions.get(r.estate_id)), []).append(r.leaf_standard)
-        b.setdefault((r.reading_date, "ALL"), []).append(r.leaf_standard)
+        bucket.setdefault(
+            (
+                r.reading_date,
+                r.estate_id,
+                r.session
+            ),
+            []
+        ).append(r.leaf_standard)
+
+    # Per-factory values for the selected estate (used only where 2+ factories entered)
+    fac: dict[tuple, dict[int, list]] = {}
+    if selected_estate is not None:
+        for r in reads:
+            if r.estate_id == selected_estate.id:
+                fac.setdefault((r.reading_date, r.session), {}).setdefault(r.submitted_by, []).append(r.leaf_standard)
+    fac_names = _names_for(db, {uid for per in fac.values() for uid in per})
+
     out = []
+
     for i in range(days):
         dd = start + timedelta(days=i)
-        out.append({"date": dd.isoformat(), "HG": _avg(b.get((dd, "HG"), [])),
-                    "LG": _avg(b.get((dd, "LG"), [])), "ALL": _avg(b.get((dd, "ALL"), []))})
+
+        members = [
+            (
+                e.region,
+                {
+                    session: _avg(
+                        bucket.get(
+                            (
+                                dd,
+                                e.id,
+                                session
+                            ),
+                            []
+                        )
+                    )
+                    for session in config.SESSIONS
+                }
+            )
+            for e in estates
+            if e.region in ("HG", "LG")
+        ]
+
+        point = {
+            "date": dd.isoformat()
+        }
+
+        for key in ("HG", "LG", "ALL"):
+            selected = [
+                values
+                for region, values in members
+                if key == "ALL" or region == key
+            ]
+
+            point[key] = _avg([
+                _avg([
+                    member[session]
+                    for member in selected
+                ])
+                for session in config.SESSIONS
+            ])
+
+        # Optional selected-estate daily average.
+        # Same calculation principle:
+        # average readings inside each session,
+        # then average Morning / Noon / Evening.
+        if selected_estate is not None:
+
+            estate_sessions = {
+                session: _avg(
+                    bucket.get(
+                        (
+                            dd,
+                            selected_estate.id,
+                            session
+                        ),
+                        []
+                    )
+                )
+                for session in config.SESSIONS
+            }
+
+            point["ESTATE"] = _avg(
+                list(estate_sessions.values())
+            )
+            # Per-session values for the "View daily values" table
+            point["ESTATE_SESSIONS"] = estate_sessions
+
+            point["ESTATE_FACTORIES"] = {
+                s: sorted(
+                    ({"name": fac_names.get(uid, f"User {uid}"), "value": _avg(v)}
+                     for uid, v in fac.get((dd, s), {}).items()),
+                    key=lambda x: x["name"])
+                for s in config.SESSIONS
+                if len(fac.get((dd, s), {})) > 1
+            }
+
+        out.append(point)
+
     return out
 
 
@@ -517,7 +767,7 @@ _SESS_ORDER = {s: i for i, s in enumerate(config.SESSIONS)}
 @router.get("/admin/entries")
 def admin_entries(frm: date | None = Query(default=None, alias="from"), to: date | None = None,
                   estate_id: int | None = None, history: bool = False,
-                  _: User = Depends(require("admin")), db: Session = Depends(get_db)):
+                  _: User = Depends(dashboard_access), db: Session = Depends(get_db)):
     """Current value per slot with who entered it, or (history=true) every
     save ever made, including values that were later overwritten."""
     to = to or today()
@@ -553,6 +803,19 @@ def admin_entries(frm: date | None = Query(default=None, alias="from"), to: date
              "percent": round(r.leaf_standard * 100, 2), "remarks": r.remarks,
              "entered_by_name": r.entered_by_name, "entered_by_email": r.entered_by_email,
              "via": names.get(r.submitted_by), "time": r.updated_at.isoformat() + "Z"} for r in rows]
+
+
+@router.delete("/admin/entries/{reading_id}")
+def admin_delete_entry(reading_id: int, admin: User = Depends(require("admin")), db: Session = Depends(get_db)):
+    reading = db.get(Reading, reading_id)
+    if not reading:
+        raise HTTPException(404, "Entry not found")
+    db.execute(delete(ReadingLog).where(ReadingLog.reading_id == reading_id))
+    audit(db, admin, "entry_delete",
+          f"reading_id={reading_id} estate_id={reading.estate_id} date={reading.reading_date} session={reading.session}")
+    db.delete(reading)
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/admin/people")

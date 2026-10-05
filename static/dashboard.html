@@ -6,17 +6,31 @@
 <meta name="theme-color" content="#2e6b3a">
 <title>Leaf Standard · CEO Dashboard</title>
 <link rel="stylesheet" href="static/style.css">
+<link rel="stylesheet" href="static/dashboard.css?v=20261002-axis-values-2">
+<style id="ls-daily-values-full">
+  /* Daily values: full height, no inner vertical scroll */
+  #trendDetails #trendValues,
+  #trendDetails .tablewrap {
+    max-height: none !important;
+    height: auto !important;
+    overflow-y: visible !important;
+    overflow-x: auto !important;
+  }
+  #trendDetails > summary { list-style: none; pointer-events: none; cursor: default; font-size: 15px; }
+  #trendDetails > summary::-webkit-details-marker { display: none; }
+</style>
 <style id="ls-hide-target-entries">#tbl thead tr:first-child th:nth-child(4),#tbl thead tr:first-child th:nth-child(5),#tbl tbody td:has(.bar),#tbl tbody td.subcount{display:none!important}</style>
 </head>
-<body>
+<body class="dashboard-page">
 <header class="top">
   <h1>Leaf Standard — All Estates<small id="who">CEO dashboard</small></h1>
   <a id="lnkEntry" class="btn ghost hidden" href="./" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Entry</a>
+  <a id="lnkEntries" class="btn ghost hidden" href="admin#entries" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Entries</a>
   <a id="lnkAdmin" class="btn ghost hidden" href="admin" style="border-color:rgba(255,255,255,.6);color:#fff;padding:6px 10px">Users</a>
   <button id="btnOut" class="ghost">Logout</button>
 </header>
 
-<main class="wrap">
+<main class="wrap dashboard-wrap">
   <section id="loginCard" class="card hidden" style="max-width:420px;margin:30px auto">
     <h2>CEO / Admin login</h2>
     <form id="loginForm">
@@ -51,138 +65,261 @@
           <button class="ghost" data-p="mtd">This month</button>
           <button class="ghost" data-p="q">Quarter</button>
         </div>
+        <select id="trendEstate" class="estate-pick" aria-label="Estate" title="Estate for trend">
+          <option value="">All estates</option>
+        </select>
         <div style="flex:1"></div>
         <button id="xls">⬇ Excel</button>
       </div>
     </div>
 
+    <div id="alert" aria-live="polite"></div>
+    <div id="loadError" role="alert"></div>
+
+    <!-- TREND GRAPH (top) -->
+    <section class="card trend-card" aria-labelledby="trendTitle">
+      <div class="chart-heading">
+        <div><p class="eyebrow">LEAF QUALITY OVER TIME</p><h2 id="trendTitle">Daily trend</h2><p id="trendRange" class="muted"></p></div>
+        <button type="button" class="ghost" id="expandChart">⤢ Expand chart</button>
+      </div>
+      <div class="chart-controls">
+        <fieldset id="seriesControls"><legend class="sr-only">Chart series</legend>
+          <label><input type="checkbox" value="ALL" checked> Company</label>
+          <label><input type="checkbox" value="HG" checked> High Grown</label>
+          <label><input type="checkbox" value="LG" checked> Low Grown</label>
+        </fieldset>
+
+        
+
+        <label class="scale-control" for="chartScale">Percentage scale <select id="chartScale"><option value="full">Full · 0–100%</option><option value="detail">Detail · fit readings</option></select></label>
+        <label class="scale-control" for="chartStep">Percentage interval <select id="chartStep"><option value="auto">Auto · best fit</option><option value="1">1% intervals</option><option value="2">2% intervals</option><option value="5">5% intervals</option><option value="10">10% intervals</option><option value="20">20% intervals</option></select></label>
+      </div>
+      <div id="trend" aria-live="polite"></div>
+      <p class="chart-note muted">Daily averages use the same calculation as the day table. Gaps mean no readings. Click the graph to expand it. Hover over a point for its value, or open the daily values below. Small percentage intervals may require vertical scrolling.<span class="mobile-hint"> On phones, swipe the chart or estate table sideways to see all columns and dates.</span></p>
+      <details id="trendDetails" open><summary>View daily values</summary><div id="trendValues" class="tablewrap"></div></details>
+    </section>
+
+    <!-- KPI CARDS (now below the graph) -->
     <div class="kpis" id="kpis"></div>
-    <div id="alert"></div>
 
-    <div class="card">
-      <h2 id="tblTitle">Leaf Standard</h2>
+    <!-- ESTATE TABLE -->
+    <section class="card" aria-labelledby="tblTitle">
+      <div class="chart-heading"><div><p class="eyebrow">ESTATE PERFORMANCE</p><h2 id="tblTitle">Leaf Standard</h2></div></div>
       <div id="tbl"><p class="muted">Loading…</p></div>
-    </div>
+    </section>
 
-    <div class="card">
-      <h2>Trend — last 14 days</h2>
-      <div id="trend"></div>
-    </div>
     <p class="muted" style="font-size:12px">Auto-refreshes every 2 minutes · <span id="stamp"></span></p>
   </section>
 </main>
 
-<script src="static/common.js"></script>
+<dialog id="chartDialog" aria-labelledby="expandedTitle">
+  <div class="chart-heading"><div><h2 id="expandedTitle">Daily leaf standard trend</h2><p id="expandedRange" class="muted"></p></div><button type="button" id="closeChart" class="ghost" autofocus>Close ✕</button></div>
+  <div class="chart-controls">
+    <label class="scale-control" for="expandedScale">Percentage scale <select id="expandedScale"><option value="full">Full · 0–100%</option><option value="detail">Detail · fit readings</option></select></label>
+    <label class="scale-control" for="expandedStep">Percentage interval <select id="expandedStep"><option value="auto">Auto · best fit</option><option value="1">1% intervals</option><option value="2">2% intervals</option><option value="5">5% intervals</option><option value="10">10% intervals</option><option value="20">20% intervals</option></select></label>
+  </div>
+  <div id="expandedTrend"></div><p class="muted chart-note">Use the daily values below the main chart to inspect exact readings.</p>
+</dialog>
+<script src="static/common.js?v=20261002-point-values-1"></script>
+<script src="static/dashboard.js?v=20261005-month-values-1"></script>
+<script src="static/dashboard.js?v=20261005-estate-fix-1"></script>
+
+<!-- DASHBOARD_REMARK_INLINE_FIX_START -->
+<style>
+/* 56.0% + remark bubble on the SAME ROW */
+.ls-value-remark-inline {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 6px !important;
+    white-space: nowrap !important;
+    vertical-align: middle !important;
+}
+
+/* Bubble must have no background/card */
+.ls-value-remark-inline .ls-inline-remark-bubble,
+.ls-value-remark-inline button,
+.ls-value-remark-inline [role="button"] {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: auto !important;
+    min-width: 0 !important;
+    height: auto !important;
+    line-height: 1 !important;
+    vertical-align: middle !important;
+}
+</style>
+
 <script>
-const $ = id => document.getElementById(id);
-let cfg, mode = 'day', timer;
+(function () {
 
-async function boot() {
-  $('btnOut').onclick = LS.logout;
-  cfg = await LS.api('config');
-  if (!LS.store.get('token')) return showLogin();
-  try {
-    const me = await LS.api('me');
-    if (!['ceo', 'admin'].includes(me.role)) { location.href = './'; return; }
-    start(me);
-  } catch (e) { showLogin(); }
-}
+    function findBubble(td) {
+        const elements = [...td.querySelectorAll(
+            'button, a, span, div, [role="button"]'
+        )];
 
-function showLogin() {
-  $('loginCard').classList.remove('hidden'); $('btnOut').classList.add('hidden');
-  // Google Sign-In: only reached when there is no valid saved session.
-  LS.googleButton($('gBox'), cfg && cfg.google_client_id, u => {
-    if (!['ceo', 'admin'].includes(u.role)) { location.href = './'; return; }
-    $('loginMsg').innerHTML = '';
-    $('loginCard').classList.add('hidden'); $('btnOut').classList.remove('hidden'); start(u);
-  }, e => { $('loginMsg').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`; });
-}
+        return elements.find(el => {
+            const t = (el.textContent || '').trim();
 
-$('loginForm').onsubmit = async ev => {
-  ev.preventDefault();
-  try {
-    const r = await LS.api('login', { method: 'POST', body: JSON.stringify({ username: $('u').value, password: $('p').value }), noRedirect: true });
-    LS.store.set('token', r.token); LS.store.set('user', JSON.stringify(r.user));
-    if (!['ceo', 'admin'].includes(r.user.role)) { location.href = './'; return; }
-    $('loginCard').classList.add('hidden'); $('btnOut').classList.remove('hidden'); start(r.user);
-  } catch (e) { $('loginMsg').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`; }
-};
+            if (!t.includes('??')) return false;
 
-function start(me) {
-  $('who').textContent = `${me.full_name || me.username} · ${me.role.toUpperCase()}`;
-  if (me.role === 'admin') { $('lnkEntry').classList.remove('hidden'); $('lnkAdmin').classList.remove('hidden'); }
-  $('dash').classList.remove('hidden');
-  const params = new URLSearchParams(location.search);
-  $('day').value = params.get('date') || cfg.today; $('day').max = cfg.today;
-  $('from').value = params.get('from') || cfg.today.slice(0, 8) + '01';
-  $('to').value = params.get('to') || cfg.today;
-  if (params.get('from')) setMode('per');
-  $('prev').onclick = () => { $('day').value = LS.addDays($('day').value, -1); refresh(); };
-  $('next').onclick = () => { if ($('day').value < cfg.today) { $('day').value = LS.addDays($('day').value, 1); refresh(); } };
-  $('tdy').onclick = () => { $('day').value = cfg.today; refresh(); };
-  $('day').onchange = $('from').onchange = $('to').onchange = refresh;
-  $('mDay').onclick = () => setMode('day'); $('mPer').onclick = () => setMode('per');
-  document.querySelectorAll('[data-p]').forEach(b => b.onclick = () => {
-    const t = cfg.today, p = b.dataset.p;
-    $('to').value = t;
-    if (p === '7') $('from').value = LS.addDays(t, -6);
-    if (p === 'mtd') $('from').value = t.slice(0, 8) + '01';
-    if (p === 'q') { const m = +t.slice(5, 7), qm = String(m - ((m - 1) % 3)).padStart(2, '0'); $('from').value = `${t.slice(0, 4)}-${qm}-01`; }
-    refresh();
-  });
-  $('xls').onclick = download;
-  refresh();
-  loadTrend();
-  timer = setInterval(() => { refresh(); loadTrend(); }, 120000);
-}
+            // Prefer the smallest element actually containing the bubble.
+            const childHasBubble = [...el.children].some(
+                c => (c.textContent || '').includes('??')
+            );
 
-function setMode(m) {
-  mode = m;
-  $('mDay').classList.toggle('on', m === 'day'); $('mPer').classList.toggle('on', m === 'per');
-  $('dayBox').classList.toggle('hidden', m !== 'day'); $('perBox').classList.toggle('hidden', m === 'day');
-  refresh();
-}
+            return !childHasBubble;
+        });
+    }
 
-function query() { return mode === 'day' ? `date=${$('day').value}` : `from=${$('from').value}&to=${$('to').value}`; }
+    function findPercentElement(td, bubble) {
+        const candidates = [...td.querySelectorAll(
+            'strong, b, span, div'
+        )];
 
-async function refresh() {
-  if (!cfg) return;
-  history.replaceState(null, '', '?' + query());
-  try {
-    const d = await LS.api('summary?' + query());
-    const find = k => d.rows.find(r => r.key === k);
-    const all = find('ALL'), hg = find('HG'), lg = find('LG');
-    const tile = (l, v, s, band) => `<div class="kpi"><div class="l">${l}</div><div class="v" style="color:var(--${band === 'nil' ? 'muted' : band})">${LS.pct(v)}</div><div class="s">${s}</div></div>`;
-    const st = d.status;
-    $('kpis').innerHTML =
-      tile('Company avg', all.day_avg, `M ${LS.pct(all.morning)} · N ${LS.pct(all.noon)} · E ${LS.pct(all.evening)}`, LS.band(all.day_avg, d.target, d.warn)) +
-      tile('High Grown', hg.day_avg, '12 estates', LS.band(hg.day_avg, d.target, d.warn)) +
-      tile('Low Grown', lg.day_avg, '4 estates', LS.band(lg.day_avg, d.target, d.warn)) +
-      `<div class="kpi"><div class="l">Entries received</div><div class="v">${st.submitted}<span class="subcount"> / ${st.expected}</span></div><div class="s">${st.estates_complete}/${st.estates_total} estates complete</div></div>`;
-    $('alert').innerHTML = st.estates_missing.length ? `<div class="msg err">No entry yet: ${st.estates_missing.map(LS.esc).join(', ')}</div>` : '';
-    $('tblTitle').textContent = d.days === 1 ? `Leaf Standard — ${LS.nice(d.from)}` : `Leaf Standard — ${LS.nice(d.from)} to ${LS.nice(d.to)} (${d.days} days, averages)`;
-    LS.renderTable($('tbl'), d);
-    $('stamp').textContent = 'Updated ' + new Date().toLocaleTimeString();
-  } catch (e) {
-    if (e.status === 401) { clearInterval(timer); $('dash').classList.add('hidden'); showLogin(); }
-    else $('tbl').innerHTML = `<div class="msg err">${LS.esc(e.message)}</div>`;
-  }
-}
+        return candidates.find(el => {
+            if (el === bubble || el.contains(bubble)) return false;
 
-async function loadTrend() {
-  try { LS.renderTrend($('trend'), await LS.api('trend?days=14'), cfg.target); } catch (e) {}
-}
+            const text = (el.textContent || '').trim();
 
-async function download() {
-  const res = await LS.api('export.xlsx?' + query());
-  const blob = await res.blob();
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = (res.headers.get('content-disposition') || '').match(/filename="(.+)"/)?.[1] || 'Leaf_Standard.xlsx';
-  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-}
+            return /^\d+(?:\.\d+)?%$/.test(text);
+        });
+    }
 
-boot();
+    function fixCell(td) {
+        if (td.dataset.remarkInlineFixed === '1') return;
+
+        const bubble = findBubble(td);
+        if (!bubble) return;
+
+        let value = findPercentElement(td, bubble);
+
+        /*
+         * Some dashboard cells may contain the percentage as a direct
+         * text node instead of an element.
+         */
+        if (!value) {
+            const nodes = [...td.childNodes];
+
+            const percentNode = nodes.find(node =>
+                node.nodeType === Node.TEXT_NODE &&
+                /^\s*\d+(?:\.\d+)?%\s*$/.test(node.textContent || '')
+            );
+
+            if (percentNode) {
+                value = document.createElement('span');
+                value.textContent = percentNode.textContent.trim();
+                percentNode.replaceWith(value);
+            }
+        }
+
+        if (!value) return;
+
+        const wrap = document.createElement('span');
+        wrap.className = 'ls-value-remark-inline';
+
+        /*
+         * Insert wrapper where the value originally was.
+         * Moving existing bubble preserves its click handler.
+         */
+        value.parentNode.insertBefore(wrap, value);
+
+        wrap.appendChild(value);
+
+        bubble.classList.add('ls-inline-remark-bubble');
+        wrap.appendChild(bubble);
+
+        td.dataset.remarkInlineFixed = '1';
+    }
+
+    function fixDashboardRemarks() {
+        document.querySelectorAll('table td').forEach(fixCell);
+    }
+
+    // Initial render
+    fixDashboardRemarks();
+
+    // Dashboard data is rendered dynamically, so keep watching.
+    let scheduled = false;
+
+    const observer = new MutationObserver(() => {
+        if (scheduled) return;
+
+        scheduled = true;
+
+        requestAnimationFrame(() => {
+            scheduled = false;
+            fixDashboardRemarks();
+        });
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
+
+    // Extra checks for async dashboard loading.
+    setTimeout(fixDashboardRemarks, 300);
+    setTimeout(fixDashboardRemarks, 1000);
+    setTimeout(fixDashboardRemarks, 2500);
+
+})();
 </script>
-</body>
-</html>
+
+<!-- DASHBOARD_REMARK_INLINE_FIX_END -->
+
+
+<!-- FORCE_VALUE_REMARK_SAME_ROW_START -->
+<style id="force-value-remark-same-row">
+
+/*
+  Dashboard Leaf Standard cells:
+  value + remark bubble MUST stay on one row.
+*/
+table tbody td:nth-child(2),
+table tbody td:nth-child(3),
+table tbody td:nth-child(4) {
+    white-space: nowrap !important;
+}
+
+/* Any direct wrappers inside Morning / Noon / Evening cells */
+table tbody td:nth-child(2) > div,
+table tbody td:nth-child(3) > div,
+table tbody td:nth-child(4) > div {
+    display: inline !important;
+    width: auto !important;
+    margin: 0 !important;
+}
+
+/* Value elements */
+table tbody td:nth-child(2) b,
+table tbody td:nth-child(3) b,
+table tbody td:nth-child(4) b,
+table tbody td:nth-child(2) strong,
+table tbody td:nth-child(3) strong,
+table tbody td:nth-child(4) strong,
+table tbody td:nth-child(2) span,
+table tbody td:nth-child(3) span,
+table tbody td:nth-child(4) span {
+    vertical-align: middle !important;
+}
+
+/* Remark bubble */
+table tbody td:nth-child(2) button,
+table tbody td:nth-child(3) button,
+table tbody td:nth-child(4) button,
+table tbody td:nth-child(2) a,
+table tbody td:nth-child(3) a,
+table tbody td:nth-child(4) a {
+    display: inline-flex !important;
+    vertical-align: middle !important;
+    align-items: center !important;
+    justify-content: center !important;
+
+    background: transparent !important;}

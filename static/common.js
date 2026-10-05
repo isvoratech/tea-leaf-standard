@@ -24,7 +24,7 @@ const LS = (() => {
   }
 
   const T = {
-    en: { title: 'Leaf Standard', sub: 'Field Diary · daily 3-round entry', login: 'Login', username: 'Username', password: 'Password',
+    en: { title: 'Daily Leaf Standard', sub: 'Field Diary · daily 3-round entry', login: 'Login', username: 'Username', password: 'Password',
       date: 'Date', morning: 'Morning', noon: 'Noon', evening: 'Evening', save: 'Save', update: 'Update',
       submitted: 'Submitted', pending: 'Pending', queued: 'Queued (offline)', pct: 'Leaf standard %', weights: 'Sample weights',
       good: 'Good leaf (g)', total: 'Total sample (g)', remarks: 'Remarks', logout: 'Logout', last7: 'Last 7 days',
@@ -67,9 +67,13 @@ const LS = (() => {
       const isAvg = r.type === 'avg';
       const cls = isAvg ? `avg${r.key === 'ALL' ? ' company' : ''}` : '';
       const miss = !isAvg && r.submitted === 0;
-      const tip = !isAvg && r.remarks?.length ? ` title="${esc(r.remarks.join('\n'))}"` : '';
-      h += `<tr class="${cls}"><td${tip}>${esc(r.name)}${miss ? ' <span class="missing">● no entry</span>' : ''}${tip ? ' 💬' : ''}</td>`;
-      for (const s of S) h += `<td class="v ${isAvg ? '' : band(r[s], data.target, data.warn)}">${pct(r[s])}</td>`;
+      h += `<tr class="${cls}"><td>${esc(r.name)}${miss ? ' <span class="missing">● no entry</span>' : ''}</td>`;
+      for (const s of S) {
+        const remarks = !isAvg && r.remarks_by_session?.[s]?.length
+          ? `<div class="table-remarks">${r.remarks_by_session[s].map((remark, i) => `<button type="button" class="remark-bubble" data-remark="${esc(remark)}" aria-label="Show remark ${i + 1}" title="Show remark">💬</button>`).join('')}</div>`
+          : '';
+        h += `<td class="v ${isAvg ? '' : band(r[s], data.target, data.warn)}">${pct(r[s])}${remarks}</td>`;
+      }
       h += `<td class="v ${isAvg ? '' : band(r.day_avg, data.target, data.warn)}">${pct(r.day_avg)}</td>`;
       h += `<td class="subcount">${r.submitted}/${r.expected}</td></tr>`;
     }
@@ -78,30 +82,489 @@ const LS = (() => {
     el.innerHTML = h;
   }
 
-  function renderTrend(el, pts, target) {
-    const W = 700, H = 220, L = 38, R = 10, Tp = 12, B = 26;
-    const vals = pts.flatMap(p => [p.HG, p.LG, p.ALL]).filter(v => v != null);
-    if (!vals.length) { el.innerHTML = '<p class="muted">No data in the last days.</p>'; return; }
-    let lo = Math.min(...vals, target) - 0.03, hi = Math.max(...vals, target) + 0.03;
-    lo = Math.max(0, Math.floor(lo * 20) / 20); hi = Math.min(1, Math.ceil(hi * 20) / 20);
-    const x = i => L + (W - L - R) * (pts.length === 1 ? 0.5 : i / (pts.length - 1));
-    const y = v => Tp + (H - Tp - B) * (1 - (v - lo) / (hi - lo));
-    const css = getComputedStyle(document.documentElement);
-    const col = { ALL: css.getPropertyValue('--brand'), HG: '#3b7dd8', LG: css.getPropertyValue('--accent') };
-    let s = `<svg class="trend" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Leaf standard trend">`;
-    for (let g = lo; g <= hi + 1e-9; g += 0.05) s += `<line x1="${L}" x2="${W - R}" y1="${y(g)}" y2="${y(g)}" stroke="var(--line)"/><text x="${L - 4}" y="${y(g) + 4}" text-anchor="end">${Math.round(g * 100)}%</text>`;
-    s += `<line x1="${L}" x2="${W - R}" y1="${y(target)}" y2="${y(target)}" stroke="var(--bad)" stroke-dasharray="4 4"/>`;
-    const step = Math.ceil(pts.length / 7);
-    pts.forEach((p, i) => { if (i % step === 0 || i === pts.length - 1) s += `<text x="${x(i)}" y="${H - 8}" text-anchor="${i === pts.length - 1 ? 'end' : i === 0 ? 'start' : 'middle'}">${p.date.slice(8)}/${p.date.slice(5, 7)}</text>`; });
-    for (const k of ['HG', 'LG', 'ALL']) {
-      let d = '', pen = false;
-      pts.forEach((p, i) => { if (p[k] == null) { pen = false; return; } d += `${pen ? 'L' : 'M'}${x(i).toFixed(1)},${y(p[k]).toFixed(1)}`; pen = true; });
-      s += `<path d="${d}" fill="none" stroke="${col[k]}" stroke-width="${k === 'ALL' ? 2.6 : 1.6}" vector-effect="non-scaling-stroke"/>`;
-      pts.forEach((p, i) => { if (p[k] != null) s += `<circle cx="${x(i)}" cy="${y(p[k])}" r="${k === 'ALL' ? 3 : 2}" fill="${col[k]}"><title>${p.date} ${k}: ${pct(p[k])}</title></circle>`; });
+  function renderTrend(
+    el,
+    pts,
+    target,
+    {
+      scale = 'full',
+      series = ['HG', 'LG', 'ALL'],
+      height = 360,
+      interval = 'auto',
+      estateName = 'Estate'
+    } = {}
+  ) {
+
+    const W = Math.max(
+      620,
+      Math.round(el.clientWidth || 900)
+    );
+
+    const L = 58;
+    const R = 24;
+    const Tp = 36;
+    const B = 48;
+
+    const keys = [
+      'HG',
+      'LG',
+      'ALL',
+      'ESTATE'
+    ].filter(k => series.includes(k));
+
+    const vals = pts
+      .flatMap(p => keys.map(k => p[k]))
+      .filter(v => Number.isFinite(v));
+
+    if (!keys.length) {
+      el.innerHTML =
+        '<p class="chart-empty">Select at least one series to show the trend.</p>';
+      return;
     }
-    s += '</svg>';
-    el.innerHTML = s + `<div class="legend"><span style="--c:${col.ALL}">Company</span><span style="--c:${col.HG}">High Grown</span><span style="--c:${col.LG}">Low Grown</span><span style="--c:var(--bad)">Target ${pct(target)} (dashed)</span></div>`;
+
+    if (!vals.length) {
+      el.innerHTML =
+        '<p class="chart-empty">No readings for the selected dates and series.</p>';
+      return;
+    }
+
+
+    const allowedSteps = [
+      1, 2, 5, 10, 20
+    ];
+
+    const requestedStep =
+      allowedSteps.includes(Number(interval))
+        ? Number(interval)
+        : null;
+
+
+    let lowPercent = 0;
+    let highPercent = 100;
+
+
+    if (scale === 'detail') {
+
+      lowPercent = Math.max(
+        0,
+        Math.min(...vals, target) * 100 - 1
+      );
+
+      highPercent = Math.min(
+        100,
+        Math.max(...vals, target) * 100 + 1
+      );
+    }
+
+
+    const maxIntervals =
+      Math.max(
+        2,
+        Math.floor(
+          (height - Tp - B) / 32
+        )
+      );
+
+
+    const stepPercent =
+      requestedStep ||
+      allowedSteps.find(
+        n =>
+          (highPercent - lowPercent) / n
+          <= maxIntervals
+      ) ||
+      20;
+
+
+    lowPercent =
+      Math.floor(
+        lowPercent / stepPercent
+      ) * stepPercent;
+
+
+    highPercent =
+      Math.ceil(
+        highPercent / stepPercent
+      ) * stepPercent;
+
+
+    if (highPercent <= lowPercent) {
+      lowPercent = 0;
+      highPercent = 100;
+    }
+
+
+    const lo = lowPercent / 100;
+    const hi = highPercent / 100;
+
+
+    const tickCount =
+      Math.round(
+        (highPercent - lowPercent) /
+        stepPercent
+      ) + 1;
+
+
+    const H =
+      Math.max(
+        height,
+        (tickCount - 1) * 26 +
+        Tp +
+        B
+      );
+
+
+    const x = i =>
+      L +
+      (W - L - R) *
+      (
+        pts.length === 1
+          ? 0.5
+          : i / (pts.length - 1)
+      );
+
+
+    const y = v =>
+      Tp +
+      (H - Tp - B) *
+      (
+        1 -
+        (v - lo) /
+        (hi - lo)
+      );
+
+
+    const col = {
+      ALL: 'var(--brand)',
+      HG: 'var(--chart-hg, #2870bd)',
+      LG: 'var(--chart-lg, #a66412)',
+      ESTATE: 'var(--chart-estate, #7c3aed)'
+    };
+
+
+    const names = {
+      ALL: 'Company',
+      HG: 'High Grown',
+      LG: 'Low Grown',
+      ESTATE: estateName || 'Estate'
+    };
+
+
+    let svg =
+      `<svg class="trend"
+        style="height:${H}px;min-width:${W}px"
+        viewBox="0 0 ${W} ${H}"
+        role="img"
+        aria-label="Leaf standard daily trend">
+
+        <text x="${L}" y="16">
+          Leaf standard (%)
+        </text>`;
+
+
+    for (
+      let percent = lowPercent;
+      percent <= highPercent;
+      percent += stepPercent
+    ) {
+
+      const g = percent / 100;
+
+      svg +=
+        `<line
+          x1="${L}"
+          x2="${W - R}"
+          y1="${y(g)}"
+          y2="${y(g)}"
+          stroke="var(--line)"
+        />
+
+        <text
+          class="percentage-tick"
+          x="${L - 10}"
+          y="${y(g) + 4}"
+          text-anchor="end"
+        >${percent}%</text>`;
+    }
+
+
+    svg +=
+      `<line
+        x1="${L}"
+        x2="${W - R}"
+        y1="${y(target)}"
+        y2="${y(target)}"
+        stroke="var(--bad)"
+        stroke-width="1.5"
+        stroke-dasharray="6 5"
+      />`;
+
+
+    /*
+     * X-axis:
+     * normal 14-day view = every date
+     * long periods = spaced date labels
+     */
+    const indices = new Set();
+
+
+    if (pts.length <= 14) {
+
+      pts.forEach(
+        (_, i) => indices.add(i)
+      );
+
+    } else {
+
+      const labels =
+        Math.min(
+          pts.length,
+          Math.max(
+            2,
+            Math.floor(
+              (W - L - R) / 115
+            )
+          )
+        );
+
+
+      Array.from(
+        {length: labels},
+        (_, i) =>
+          labels === 1
+            ? 0
+            : Math.round(
+                i *
+                (pts.length - 1) /
+                (labels - 1)
+              )
+      ).forEach(
+        i => indices.add(i)
+      );
+    }
+
+
+    indices.forEach(i => {
+
+      const label =
+        new Date(
+          pts[i].date +
+          'T00:00:00'
+        )
+        .toLocaleDateString(
+          'en-GB',
+          {
+            day: '2-digit',
+            month: 'short'
+          }
+        );
+
+
+      svg +=
+        `<text
+          class="trend-date-label"
+          x="${x(i)}"
+          y="${H - 18}"
+          text-anchor="${
+            pts.length === 1
+              ? 'middle'
+              : i === 0
+                ? 'start'
+                : i === pts.length - 1
+                  ? 'end'
+                  : 'middle'
+          }"
+        >${esc(label)}</text>`;
+    });
+
+
+    /*
+     * Only ONE series receives visible numeric labels:
+     *
+     * All estates -> Company
+     * Estate chosen -> selected Estate
+     */
+    const valueLabelKey =
+      keys.includes('ESTATE')
+        ? 'ESTATE'
+        : 'ALL';
+
+
+    for (const k of keys) {
+
+      let path = '';
+      let pen = false;
+
+
+      pts.forEach((p, i) => {
+
+        if (!Number.isFinite(p[k])) {
+
+          pen = false;
+          return;
+        }
+
+
+        path +=
+          `${pen ? 'L' : 'M'}` +
+          `${x(i).toFixed(2)},` +
+          `${y(p[k]).toFixed(2)} `;
+
+        pen = true;
+      });
+
+
+      svg +=
+        `<path
+          d="${path}"
+          fill="none"
+          stroke="${col[k]}"
+          stroke-width="${
+            k === 'ALL'
+              ? 3
+              : k === 'ESTATE'
+                ? 2.8
+                : 2
+          }"
+          stroke-linejoin="round"
+        />`;
+
+
+      pts.forEach((p, i) => {
+
+        if (!Number.isFinite(p[k]))
+          return;
+
+
+        const px = x(i);
+        const py = y(p[k]);
+
+
+        svg +=
+          `<circle
+            cx="${px}"
+            cy="${py}"
+            r="${
+              pts.length > 90
+                ? 2
+                : (
+                    k === 'ALL' ||
+                    k === 'ESTATE'
+                  )
+                    ? 4
+                    : 3
+            }"
+            fill="${col[k]}"
+            stroke="var(--card)"
+            stroke-width="1"
+          >
+            <title>
+              ${esc(p.date)} ·
+              ${names[k]}:
+              ${pct(p[k])}
+            </title>
+          </circle>`;
+
+
+        /*
+         * Small clean value:
+         * ONLY company or selected estate.
+         */
+        if (
+          k === valueLabelKey &&
+          pts.length <= 90
+        ) {
+
+          svg +=
+            `<text
+              class="trend-point-value"
+              x="${px}"
+              y="${py - 11}"
+              text-anchor="middle"
+            >${(p[k] * 100).toFixed(1)}</text>`;
+        }
+
+      });
+    }
+
+
+    svg += '</svg>';
+
+
+    const legend =
+      [
+        'ALL',
+        'HG',
+        'LG',
+        'ESTATE'
+      ]
+      .filter(
+        k => keys.includes(k)
+      )
+      .map(
+        k =>
+          `<span style="--c:${col[k]}">` +
+          `${names[k]}` +
+          `</span>`
+      )
+      .join('');
+
+
+    el.innerHTML =
+      `<div
+        class="chart-scroll"
+        style="max-height:${height}px;overflow:auto"
+        tabindex="0"
+      >${svg}</div>` +
+
+      `<p class="chart-axis-note muted">
+        Percentage interval:
+        ${stepPercent}%
+        ${
+          H > height
+            ? ' · Scroll vertically to see the full percentage scale.'
+            : ''
+        }
+      </p>` +
+
+      `<div class="legend">
+        ${legend}
+        <span style="--c:var(--bad)">
+          Target ${pct(target)} · dashed line
+        </span>
+      </div>`;
   }
+
+  let activeRemarkPopover = null;
+  function closeRemarkPopover() {
+    if (activeRemarkPopover) { activeRemarkPopover.remove(); activeRemarkPopover = null; }
+  }
+  function openRemarkPopover(button) {
+    closeRemarkPopover();
+    const pop = document.createElement('div');
+    pop.className = 'remark-popover';
+    pop.setAttribute('role', 'dialog');
+    pop.innerHTML = `<button type="button" class="remark-close" aria-label="Close remark">×</button><div class="remark-popover-title">Remark</div><div class="remark-popover-text"></div>`;
+    pop.querySelector('.remark-popover-text').textContent = button.dataset.remark || '';
+    pop.querySelector('.remark-close').onclick = closeRemarkPopover;
+    document.body.appendChild(pop);
+    const rect = button.getBoundingClientRect();
+    const width = Math.min(320, Math.max(220, window.innerWidth - 24));
+    pop.style.width = `${width}px`;
+    let left = Math.min(Math.max(12, rect.left + rect.width / 2 - width / 2), window.innerWidth - width - 12);
+    let top = rect.bottom + 8;
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+    const h = pop.getBoundingClientRect().height;
+    if (top + h > window.innerHeight - 12) pop.style.top = `${Math.max(12, rect.top - h - 8)}px`;
+    activeRemarkPopover = pop;
+  }
+  document.addEventListener('click', event => {
+    const bubble = event.target.closest?.('.remark-bubble');
+    if (bubble) { event.preventDefault(); event.stopPropagation(); openRemarkPopover(bubble); return; }
+    if (!event.target.closest?.('.remark-popover')) closeRemarkPopover();
+  });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') closeRemarkPopover(); });
 
   /* Google Sign-In button.
      box      - element containing a .gbtn child; un-hidden once Google's script loads
